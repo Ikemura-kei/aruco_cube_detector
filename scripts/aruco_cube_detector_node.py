@@ -1,13 +1,64 @@
 import cv2
 import numpy as np
 import rospy
+import matplotlib as mpl
+from mpl_toolkits.mplot3d import Axes3D
+import matplotlib.pyplot as plt
+import rospy
+
+from geometry_msgs.msg import PoseStamped
+
+# plt.ion()    
+# fig = plt.figure()
+# ax = fig.add_subplot(projection='3d')
+# plt.show()
 
 dist = np.array([-0.464986, 0.153405, -0.008499, -0.001134, 0.000000])
 cam_mat = np.array([[2217.98361,    0.     ,  530.32626],
             [0.     , 2201.45526,  429.69331],
             [0.     ,    0.     ,    1.     ]])
 
-def euler_to_rotation_matrix(z, y, x):
+def get_quaternion_from_rotation_matrix(R):
+    m00 = R[0,0]
+    m01 = R[0,1]
+    m02 = R[0,2]
+    m10 = R[1,0]
+    m11 = R[1,1]
+    m12 = R[1,2]
+    m20 = R[2,0]
+    m21 = R[2,1]
+    m22 = R[2,2]
+    
+    tr = m00 + m11 + m22
+
+    if (tr > 0):
+        S = np.sqrt(tr+1.0) * 2 # S=4*qw 
+        qw = 0.25 * S
+        qx = (m21 - m12) / S
+        qy = (m02 - m20) / S 
+        qz = (m10 - m01) / S 
+    elif (m00 > m11) and (m00 > m22):
+        S = np.sqrt(1.0 + m00 - m11 - m22) * 2 # S=4*qx 
+        qw = (m21 - m12) / S
+        qx = 0.25 * S
+        qy = (m01 + m10) / S 
+        qz = (m02 + m20) / S 
+    elif (m11 > m22):
+        S = np.sqrt(1.0 + m11 - m00 - m22) * 2 # S=4*qy
+        qw = (m02 - m20) / S
+        qx = (m01 + m10) / S 
+        qy = 0.25 * S
+        qz = (m12 + m21) / S 
+    else:
+        S = np.sqrt(1.0 + m22 - m00 - m11) * 2 # S=4*qz
+        qw = (m10 - m01) / S
+        qx = (m02 + m20) / S
+        qy = (m12 + m21) / S
+        qz = 0.25 * S
+        
+    return qw, qx, qy, qz
+
+def get_euler_zyx_from_rotation_matrix(z, y, x):
     """Converts an euler angle (Z-Y-X convention) into an equivalent rotation matrix
 
     Args:
@@ -127,9 +178,9 @@ def get_surface_transform(source_id, target_id):
         elif (target_id == 3):
             return get_rotation_matrix_from_quaternion(*get_quaternion(np.array([0, 1, 0]), -np.pi)), np.array([[0], [0], [1]]) # ok
         elif (target_id == 4):
-            return euler_to_rotation_matrix(-np.pi/2, -np.pi/2, 0).T, np.array([[0], [-0.5], [0.5]]) # ok
+            return get_euler_zyx_from_rotation_matrix(-np.pi/2, -np.pi/2, 0).T, np.array([[0], [-0.5], [0.5]]) # ok
         elif (target_id == 5):
-            return euler_to_rotation_matrix(np.pi/2, -np.pi/2, 0).T, np.array([[0], [0.5], [0.5]]) # ok
+            return get_euler_zyx_from_rotation_matrix(np.pi/2, -np.pi/2, 0).T, np.array([[0], [0.5], [0.5]]) # ok
     elif (source_id == 2):
         if (target_id == 0):
             return get_rotation_matrix_from_quaternion(*get_quaternion(np.array([0, 1, 0]), -np.pi)), np.array([[0], [0], [1]]) # ok
@@ -140,9 +191,9 @@ def get_surface_transform(source_id, target_id):
         elif (target_id == 3):
             return get_rotation_matrix_from_quaternion(*get_quaternion(np.array([0, 1, 0]), -np.pi / 2.0)), np.array([[-0.5], [0], [0.5]]) # ok
         elif (target_id == 4):
-            return euler_to_rotation_matrix(-np.pi, 0, np.pi/2).T, np.array([[0], [-0.5], [0.5]]) # ok
+            return get_euler_zyx_from_rotation_matrix(-np.pi, 0, np.pi/2).T, np.array([[0], [-0.5], [0.5]]) # ok
         elif (target_id == 5):
-            return euler_to_rotation_matrix(-np.pi, 0, -np.pi/2).T, np.array([[0], [0.5], [0.5]]) # ok
+            return get_euler_zyx_from_rotation_matrix(-np.pi, 0, -np.pi/2).T, np.array([[0], [0.5], [0.5]]) # ok
     elif (source_id == 3):
         if (target_id == 0):
             return get_rotation_matrix_from_quaternion(*get_quaternion(np.array([0, 1, 0]), -np.pi / 2.0)), np.array([[-0.5], [0], [0.5]]) # ok
@@ -153,33 +204,33 @@ def get_surface_transform(source_id, target_id):
         elif (target_id == 3):
             return get_rotation_matrix_from_quaternion(*get_quaternion(np.array([1, 0, 0]), 0)), np.array([[0], [0], [0]]) # ok
         elif (target_id == 4):
-            return euler_to_rotation_matrix(np.pi/2, np.pi/2, 0).T, np.array([[0], [-0.5], [0.5]])
+            return get_euler_zyx_from_rotation_matrix(np.pi/2, np.pi/2, 0).T, np.array([[0], [-0.5], [0.5]])
         elif (target_id == 5):
-            return euler_to_rotation_matrix(-np.pi/2, np.pi/2, 0).T, np.array([[0], [0.5], [0.5]])
+            return get_euler_zyx_from_rotation_matrix(-np.pi/2, np.pi/2, 0).T, np.array([[0], [0.5], [0.5]])
     elif (source_id == 4):
         if (target_id == 0):
-            return euler_to_rotation_matrix(0, 0, np.pi/2).T, np.array([[0], [0.5], [0.5]]) # ok
+            return get_euler_zyx_from_rotation_matrix(0, 0, np.pi/2).T, np.array([[0], [0.5], [0.5]]) # ok
         elif (target_id == 1):
-            return euler_to_rotation_matrix(np.pi/2, 0, np.pi/2).T, np.array([[-0.5], [0], [0.5]]) # ok
+            return get_euler_zyx_from_rotation_matrix(np.pi/2, 0, np.pi/2).T, np.array([[-0.5], [0], [0.5]]) # ok
         elif (target_id == 2):
-            return euler_to_rotation_matrix(np.pi, 0, np.pi/2).T, np.array([[0], [-0.5], [0.5]]) # ok
+            return get_euler_zyx_from_rotation_matrix(np.pi, 0, np.pi/2).T, np.array([[0], [-0.5], [0.5]]) # ok
         elif (target_id == 3):
-            return euler_to_rotation_matrix(-np.pi/2, 0, np.pi/2).T, np.array([[0.5], [0], [0.5]]) # ok
+            return get_euler_zyx_from_rotation_matrix(-np.pi/2, 0, np.pi/2).T, np.array([[0.5], [0], [0.5]]) # ok
         elif (target_id == 4):
             return get_rotation_matrix_from_quaternion(*get_quaternion(np.array([1, 0, 0]), 0)), np.array([[0], [0], [0]]) # ok
         elif (target_id == 5):
-            return euler_to_rotation_matrix(0, 0, np.pi).T, np.array([[0], [0], [1]]) # ok
+            return get_euler_zyx_from_rotation_matrix(0, 0, np.pi).T, np.array([[0], [0], [1]]) # ok
     elif (source_id == 5):
         if (target_id == 0):
-            return euler_to_rotation_matrix(0, 0, -np.pi/2).T, np.array([[0], [-0.5], [0.5]]) # ok
+            return get_euler_zyx_from_rotation_matrix(0, 0, -np.pi/2).T, np.array([[0], [-0.5], [0.5]]) # ok
         elif (target_id == 1):
-            return euler_to_rotation_matrix(-np.pi/2, 0, -np.pi/2).T, np.array([[-0.5], [0], [0.5]]) # ok
+            return get_euler_zyx_from_rotation_matrix(-np.pi/2, 0, -np.pi/2).T, np.array([[-0.5], [0], [0.5]]) # ok
         elif (target_id == 2):
-            return euler_to_rotation_matrix(np.pi, 0, -np.pi/2).T, np.array([[0], [0.5], [0.5]]) # ok
+            return get_euler_zyx_from_rotation_matrix(np.pi, 0, -np.pi/2).T, np.array([[0], [0.5], [0.5]]) # ok
         elif (target_id == 3):
-            return euler_to_rotation_matrix(np.pi/2, 0, -np.pi/2).T, np.array([[0.5], [0], [0.5]]) # ok
+            return get_euler_zyx_from_rotation_matrix(np.pi/2, 0, -np.pi/2).T, np.array([[0.5], [0], [0.5]]) # ok
         elif (target_id == 4):
-            return euler_to_rotation_matrix(0, 0, np.pi).T, np.array([[0], [0], [1]]) # ok
+            return get_euler_zyx_from_rotation_matrix(0, 0, np.pi).T, np.array([[0], [0], [1]]) # ok
         elif (target_id == 5):
             return get_rotation_matrix_from_quaternion(*get_quaternion(np.array([1, 0, 0]), 0)), np.array([[0], [0], [0]]) # ok
 
@@ -215,8 +266,22 @@ def image_preproc(original_frame, mode=0):
     return ret
 
 def main():
+    # -- initialize ROS stuff --
+    rospy.init_node("aruco_cube_detector_node")
+    print("--> Node initialized")
+    pose_pub = rospy.Publisher("/aruco_cube_pose", PoseStamped)
+    
+    # -- initialize default cube pose --
+    aruco_cube_pose = PoseStamped()
+    aruco_cube_pose.header.seq = 0
+    aruco_cube_pose.header.frame_id = "cube"
+    aruco_cube_pose.header.stamp = rospy.Time.now()
+    aruco_cube_pose.pose.position.x = aruco_cube_pose.pose.position.y = aruco_cube_pose.pose.position.z = 0
+    aruco_cube_pose.pose.orientation.w = 1
+    aruco_cube_pose.pose.orientation.x = aruco_cube_pose.pose.orientation.y = aruco_cube_pose.pose.orientation.z = 0
+    
     # -- initialize frame getter --
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(2)
     ret, test = cap.read()
     if not ret:
         print("--> Camera initialization failed!")
@@ -240,16 +305,21 @@ def main():
    
     target_id = 0
     debug_source_id = 5
-    rec_tvec = None
-    rec_R = None
-   
     canvas = np.zeros((200, 200), np.uint8) # to hold visualization markers
+    rvec_for_vis, tvec_fin, rvec_for_vis, tvec_for_vis = None, None, None, None
     
     while not rospy.is_shutdown():
+        aruco_cube_pose.header.stamp = rospy.Time.now()
+        aruco_cube_pose.header.seq += 1
+        pose_pub.publish(aruco_cube_pose)
+        
         # -- read frame in --
         ret, frame = cap.read()
         
         if not ret:
+            if rvec_for_vis is not None and tvec_fin is not None and rvec_for_vis is not None and tvec_for_vis is not None:
+                cv2.drawFrameAxes(canvas, cam_mat, dist, rvec_for_vis, tvec_fin, 1.5) # visualization of the inferred coordinates
+                cv2.drawFrameAxes(canvas, cam_mat, dist, rvec_for_vis, tvec_for_vis, 3.5) # visualization of the inferred coordinates
             cv2.imshow("markers", canvas)
             cv2.imshow("raw", frame)
             k = cv2.waitKey(1)
@@ -271,6 +341,9 @@ def main():
         
         # -- check if the detection results are valid --
         if len(corners) <= 0 or source_id not in [0, 1, 2, 3, 4, 5]:
+            if rvec_for_vis is not None and tvec_fin is not None and rvec_for_vis is not None and tvec_for_vis is not None:
+                cv2.drawFrameAxes(canvas, cam_mat, dist, rvec_for_vis, tvec_fin, 1.5) # visualization of the inferred coordinates
+                cv2.drawFrameAxes(canvas, cam_mat, dist, rvec_for_vis, tvec_for_vis, 3.5) # visualization of the inferred coordinates
             cv2.imshow("markers", canvas)
             cv2.imshow("raw", frame)
             k = cv2.waitKey(1)
@@ -296,22 +369,33 @@ def main():
         R, _ = cv2.Rodrigues(rvec) # get rotation matrix
         R_new = np.matmul(R, R_to_source_surface.T) # apply relative rotation
         rvec_fin, _ = cv2.Rodrigues(R_new, rvec_fin) # get back Rodrigues (since OpenCV prefers working with it)
-        tvec_fin = np.matmul(R, np.array(translation * OUTER_SIZE, tvec.dtype)) # apply relative translation
-        cv2.drawFrameAxes(canvas, cam_mat, dist, rvec_fin, tvec + tvec_fin, 7.5) # visualization of the inferred coordinates
+        tvec_rel = np.matmul(R, np.array(translation * OUTER_SIZE, tvec.dtype)) # apply relative translation
+        to_cube_center_translation = np.matmul(R_new, np.array([0, 0, OUTER_SIZE*0.5], tvec.dtype))[...,None]
+        tvec_fin = tvec + tvec_rel + to_cube_center_translation
         
-        # -- get command (w, i, j, k, x, y, z) --
-        if rec_tvec is not None and rec_R is not None:
-            translation = (tvec + tvec_fin) - rec_tvec
-            x = translation[0]
-            y = translation[1]
-            z = translation[2]
-            w = 1
-            i, j, k = 0, 0, 0
-            print("Command is x:{}, y:{}, z:{}, w:{}, i:{}, j:{}, k:{}".format(x, y, z, w, i, j, k))
-        else:
-            print("Command not started")
+        tvec_for_vis = np.array([[-20.5], [-2.4], [100]], tvec.dtype)
+        rvec_for_vis = rvec_fin.copy()
+        
+        # -- get pose (w, i, j, k, x, y, z) --
+        w, i, j, k = get_quaternion_from_rotation_matrix(R_new)
+        x = tvec_fin[0][0]
+        y = tvec_fin[1][0]
+        z = tvec_fin[2][0]
+        print("Command is x:{}, y:{}, z:{}, w:{}, i:{}, j:{}, k:{}, quaternion norm:{:.3f}".format(x, y, z, w, i, j, k, np.linalg.norm(np.array([w,i,j,k]))))
+        
+        # -- update aruco cube pose --
+        aruco_cube_pose.pose.position.x = x
+        aruco_cube_pose.pose.position.y = y
+        aruco_cube_pose.pose.position.z = z
+        aruco_cube_pose.pose.orientation.w = w
+        aruco_cube_pose.pose.orientation.x = x
+        aruco_cube_pose.pose.orientation.y = y
+        aruco_cube_pose.pose.orientation.z = z
         
         # -- visualization --
+        if rvec_for_vis is not None and tvec_fin is not None and rvec_for_vis is not None and tvec_for_vis is not None:
+            cv2.drawFrameAxes(canvas, cam_mat, dist, rvec_for_vis, tvec_fin, 1.5) # visualization of the inferred coordinates
+            cv2.drawFrameAxes(canvas, cam_mat, dist, rvec_for_vis, tvec_for_vis, 3.5) # visualization of the inferred coordinates
         cv2.imshow("markers", canvas)
         cv2.imshow("raw", frame)
         k = cv2.waitKey(1)
@@ -320,9 +404,14 @@ def main():
         elif k == ord('c'):
             target_id = (target_id + 1) % 6
         elif k == ord('p'):
-            rec_tvec = tvec
-            rec_R = R
             target_id = source_id
+        
+        # ax.plot(numpy.array(tvec_fin[0]),    
+        #     numpy.array(tvec_fin[1]),    
+        #     numpy.array(tvec_fin[2]))    
+        # fig.canvas.draw()
+        # fig.canvas.flush_events()
+        # plt.draw()
 
 if __name__ == "__main__":
     main()
