@@ -338,7 +338,7 @@ def main():
                 break
             continue
         
-        # -- indistortion --
+        # -- undistortion --
         dst = frame.copy()
         dst = cv2.undistort(frame, cam_mat, dist, dst, new_cam_mat)
         
