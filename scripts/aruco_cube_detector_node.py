@@ -1,17 +1,7 @@
 import cv2
 import numpy as np
 import rospy
-import matplotlib as mpl
-from mpl_toolkits.mplot3d import Axes3D
-import matplotlib.pyplot as plt
-import rospy
-
 from geometry_msgs.msg import PoseStamped
-
-# plt.ion()    
-# fig = plt.figure()
-# ax = fig.add_subplot(projection='3d')
-# plt.show()
 
 dist = np.array([-0.464986, 0.153405, -0.008499, -0.001134, 0.000000])
 cam_mat = np.array([[2217.98361,    0.     ,  530.32626],
@@ -19,6 +9,14 @@ cam_mat = np.array([[2217.98361,    0.     ,  530.32626],
             [0.     ,    0.     ,    1.     ]])
 
 def get_quaternion_from_rotation_matrix(R):
+    """Get quaternion representation from a 3x3 rotation matrix representation
+
+    Args:
+        R (numpy.ndarray): A 3x3 rotation matrix
+
+    Returns:
+        float, float, float, float: quaternion elements as in w, i, j, k
+    """
     m00 = R[0,0]
     m01 = R[0,1]
     m02 = R[0,2]
@@ -153,7 +151,7 @@ def get_surface_transform(source_id, target_id):
         target_id (int): the index of the target surface, between 0-5
 
     Returns:
-        numpy.ndarray, numpy.ndarray: the 3x3 rotation matrix as well as the 1x3 translation vector from source surface coordinates to target surface coordinates
+        numpy.ndarray, numpy.ndarray: the 3x3 rotation matrix as well as the 1x3 translation vector from source surface coordinates to target surface coordinates. Note that the translation is in the unit of cube side length. For example, a translation of 0.5 means half of the cube side length.
     """
     if (source_id == 0):
         if (target_id == 0):
@@ -296,7 +294,6 @@ def main():
     
     # -- constant definitions --
     OUTER_SIZE = 23.5
-    HALF_OUTER_SIZE = OUTER_SIZE / 2.0
     ARUCO_SIZE = 20
     HALF_ARUCO_SIZE = ARUCO_SIZE / 2.0
     
