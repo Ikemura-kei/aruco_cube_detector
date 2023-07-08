@@ -1,0 +1,7 @@
+<launch>
+
+<node pkg="aruco_cube_detector" type="aruco_cube_detector_node.py" name="cube_detect" output="screen">
+    <param name="config_file" value="$(find aruco_cube_detector)/config/camera_config.yaml" />
+</node>
+
+</launch>

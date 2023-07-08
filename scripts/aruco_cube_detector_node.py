@@ -1,12 +1,8 @@
 import cv2
 import numpy as np
 import rospy
+import os
 from geometry_msgs.msg import PoseStamped
-
-dist = np.array([-0.464986, 0.153405, -0.008499, -0.001134, 0.000000])
-cam_mat = np.array([[2217.98361,    0.     ,  530.32626],
-            [0.     , 2201.45526,  429.69331],
-            [0.     ,    0.     ,    1.     ]])
 
 def get_quaternion_from_rotation_matrix(R):
     """Get quaternion representation from a 3x3 rotation matrix representation
@@ -266,7 +262,7 @@ def image_preproc(original_frame, mode=0):
 
 def main():
     # -- initialize ROS stuff --
-    rospy.init_node("aruco_cube_detector_node")
+    rospy.init_node("~aruco_cube_detector_node")
     print("--> Node initialized")
     pose_pub = rospy.Publisher("/aruco_cube_pose", PoseStamped)
     
@@ -278,6 +274,23 @@ def main():
     aruco_cube_pose.pose.position.x = aruco_cube_pose.pose.position.y = aruco_cube_pose.pose.position.z = 0
     aruco_cube_pose.pose.orientation.w = 1
     aruco_cube_pose.pose.orientation.x = aruco_cube_pose.pose.orientation.y = aruco_cube_pose.pose.orientation.z = 0
+    
+    # -- get external parameters --
+    config_file_path = rospy.get_param("~config_file", default="")
+    if config_file_path == "" or ".yaml" not in config_file_path or not os.path.exists(config_file_path):
+        print("--> Invalid configuration file path {}!".format(config_file_path))
+        return
+    print("--> Configuration file: {}".format(config_file_path))
+    
+    # -- read camera parameters --
+    fs = cv2.FileStorage(config_file_path, cv2.FILE_STORAGE_READ)
+    cam_mat_node = fs.getNode("camera_matrix")
+    cam_mat = cam_mat_node.mat()
+    dist_node = fs.getNode("distortion_coefficient")
+    dist = dist_node.mat()
+    
+    print("--> Distortion coefficient\n{}".format(dist))
+    print("--> Camera matrix\n{}".format(cam_mat))
     
     # -- initialize frame getter --
     cap = cv2.VideoCapture(2)
