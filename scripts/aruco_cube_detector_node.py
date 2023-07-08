@@ -153,6 +153,7 @@ def get_surface_transform(source_id, target_id):
     Returns:
         numpy.ndarray, numpy.ndarray: the 3x3 rotation matrix as well as the 1x3 translation vector from source surface coordinates to target surface coordinates. Note that the translation is in the unit of cube side length. For example, a translation of 0.5 means half of the cube side length.
     """
+    # Please don't get overwhelmed by these, they are derived per surface and they should well document itself.
     if (source_id == 0):
         if (target_id == 0):
             return get_rotation_matrix_from_quaternion(*get_quaternion(np.array([1, 0, 0]), 0)), np.array([[0], [0], [0]]) # ok
