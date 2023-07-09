@@ -275,6 +275,15 @@ def main():
     aruco_cube_pose.pose.orientation.w = 1
     aruco_cube_pose.pose.orientation.x = aruco_cube_pose.pose.orientation.y = aruco_cube_pose.pose.orientation.z = 0
     
+    # -- initialize default head pose --
+    head_pose = PoseStamped()
+    head_pose.header.seq = 0
+    head_pose.header.frame_id = "cube"
+    head_pose.header.stamp = rospy.Time.now()
+    head_pose.pose.position.x = head_pose.pose.position.y = head_pose.pose.position.z = 0
+    head_pose.pose.orientation.w = 1
+    head_pose.pose.orientation.x = head_pose.pose.orientation.y = head_pose.pose.orientation.z = 0
+    
     # -- get external parameters --
     config_file_path = rospy.get_param("~config_file", default="")
     if config_file_path == "" or ".yaml" not in config_file_path or not os.path.exists(config_file_path):
@@ -307,17 +316,21 @@ def main():
     arucoParams = cv2.aruco.DetectorParameters_create()
     
     # -- constant definitions --
-    OUTER_SIZE = 23.5
-    ARUCO_SIZE = 20
-    HALF_ARUCO_SIZE = ARUCO_SIZE / 2.0
+    ARUCO_CUBE_OUTER_SIZE = 23.5
+    ARUCO_CUBE_ARUCO_SIZE = 20
+    HALF_ARUCO_CUBE_ARUCO_SIZE = ARUCO_CUBE_ARUCO_SIZE / 2.0
+    HEAD_ARUCO_ID = 6
+    HEAD_ARUCO_SIZE = 20
+    HALF_HEAD_ARUCO_SIZE = HEAD_ARUCO_SIZE / 2.0
     
     # -- object points for solvePnP --
-    obj_pnts = np.array([[-HALF_ARUCO_SIZE, -HALF_ARUCO_SIZE, 0], [HALF_ARUCO_SIZE, -HALF_ARUCO_SIZE, 0], [HALF_ARUCO_SIZE, HALF_ARUCO_SIZE, 0], [-HALF_ARUCO_SIZE, HALF_ARUCO_SIZE, 0]]).astype(np.float32)
-   
+    aruco_cube_aruco_obj_pnts = np.array([[-HALF_ARUCO_CUBE_ARUCO_SIZE, -HALF_ARUCO_CUBE_ARUCO_SIZE, 0], [HALF_ARUCO_CUBE_ARUCO_SIZE, -HALF_ARUCO_CUBE_ARUCO_SIZE, 0], [HALF_ARUCO_CUBE_ARUCO_SIZE, HALF_ARUCO_CUBE_ARUCO_SIZE, 0], [-HALF_ARUCO_CUBE_ARUCO_SIZE, HALF_ARUCO_CUBE_ARUCO_SIZE, 0]]).astype(np.float32)
+    head_aruco_obj_pnts= np.array([[-HALF_HEAD_ARUCO_SIZE, -HALF_HEAD_ARUCO_SIZE, 0], [HALF_HEAD_ARUCO_SIZE, -HALF_HEAD_ARUCO_SIZE, 0], [HALF_HEAD_ARUCO_SIZE, HALF_HEAD_ARUCO_SIZE, 0], [-HALF_HEAD_ARUCO_SIZE, HALF_HEAD_ARUCO_SIZE, 0]]).astype(np.float32)
+    head_aruco_index = -1
     target_id = 0
     debug_source_id = 5
     canvas = np.zeros((200, 200), np.uint8) # to hold visualization markers
-    rvec_for_vis, tvec_fin, rvec_for_vis, tvec_for_vis = None, None, None, None
+    head_aruco_rvec, head_aruco_tvec, rvec_for_vis, tvec_fin, rvec_for_vis, tvec_for_vis, head_aruco_vis_tvec = None, None, None, None, None, None, None
     
     while not rospy.is_shutdown():
         aruco_cube_pose.header.stamp = rospy.Time.now()
@@ -330,7 +343,9 @@ def main():
         if not ret:
             if rvec_for_vis is not None and tvec_fin is not None and rvec_for_vis is not None and tvec_for_vis is not None:
                 cv2.drawFrameAxes(canvas, cam_mat, dist, rvec_for_vis, tvec_fin, 1.5) # visualization of the inferred coordinates
-                cv2.drawFrameAxes(canvas, cam_mat, dist, rvec_for_vis, tvec_for_vis, 3.5) # visualization of the inferred coordinates
+                cv2.drawFrameAxes(canvas, cam_mat, dist, rvec_for_vis, tvec_for_vis, 3.5) # visualization of the orientation of the cube only, at the bottom-left
+            if head_aruco_rvec is not None and head_aruco_vis_tvec is not None:
+                cv2.drawFrameAxes(canvas, cam_mat, dist, head_aruco_rvec, head_aruco_vis_tvec, 2.5) # visualization of the orientation of the head only, at the top-left
             cv2.imshow("markers", canvas)
             cv2.imshow("raw", frame)
             k = cv2.waitKey(1)
@@ -348,65 +363,84 @@ def main():
         # -- detect aruco marker --
         (corners, ids, rejected) = cv2.aruco.detectMarkers(dst, arucoDict, parameters=arucoParams)
         canvas = dst.copy()
-        source_id = ids[0][0] if ids is not None else -1
-        
-        # -- check if the detection results are valid --
-        if len(corners) <= 0 or source_id not in [0, 1, 2, 3, 4, 5]:
-            if rvec_for_vis is not None and tvec_fin is not None and rvec_for_vis is not None and tvec_for_vis is not None:
-                cv2.drawFrameAxes(canvas, cam_mat, dist, rvec_for_vis, tvec_fin, 1.5) # visualization of the inferred coordinates
-                cv2.drawFrameAxes(canvas, cam_mat, dist, rvec_for_vis, tvec_for_vis, 3.5) # visualization of the inferred coordinates
-            cv2.imshow("markers", canvas)
-            cv2.imshow("raw", frame)
-            k = cv2.waitKey(1)
-            if k == ord('q'):
-                break
-            continue
-
-        # print("--> Source id: {}, Target id: {}".format(source_id, target_id))
-        # -- estimate the pose of each aruco marker --
-        R, R_new, rvec, tvec, rvec_fin = None, None, None, None, None
+        source_id = -1 # initialize as -1
+        head_aruco_index = -1 # initialize as -1
         for i in range(len(corners)):
-            if ids[i][0] == source_id:
-                source_index = i
-        ok, rvec, tvec = cv2.solvePnP(obj_pnts, corners[source_index],cam_mat, dist, rvec, tvec)
+            if ids[i] == HEAD_ARUCO_ID:
+                head_aruco_index = i
+            else:
+                source_id = ids[i][0] # use the first found aruco as the source
+        
+        # TODO: maybe multi-processing at here is a required optimization (depends on the actual performance)
+        # -- do aruco cube processing --
+        if len(corners) >= 0 and source_id in [0, 1, 2, 3, 4, 5]:
+            # print("--> Source id: {}, Target id: {}".format(source_id, target_id))
+            # -- estimate the pose of each aruco marker --
+            R, R_new, rvec, tvec, rvec_fin = None, None, None, None, None
+            for i in range(len(corners)):
+                if ids[i][0] == source_id:
+                    source_index = i
+            ok, rvec, tvec = cv2.solvePnP(aruco_cube_aruco_obj_pnts, corners[source_index],cam_mat, dist, rvec, tvec)
 
-        # -- draw aruco marker visualization --
-        # cv2.aruco.drawDetectedMarkers(canvas, corners, ids)
-        
-        # -- setup a relative rotation and translation between the observed face and the original face --
-        R_to_source_surface, translation = get_surface_transform(source_id, target_id)
-        
-        # -- conversion to other plane --
-        R, _ = cv2.Rodrigues(rvec) # get rotation matrix
-        R_new = np.matmul(R, R_to_source_surface.T) # apply relative rotation
-        rvec_fin, _ = cv2.Rodrigues(R_new, rvec_fin) # get back Rodrigues (since OpenCV prefers working with it)
-        tvec_rel = np.matmul(R, np.array(translation * OUTER_SIZE, tvec.dtype)) # apply relative translation
-        to_cube_center_translation = np.matmul(R_new, np.array([0, 0, OUTER_SIZE*0.5], tvec.dtype))[...,None]
-        tvec_fin = tvec + tvec_rel + to_cube_center_translation
-        
-        tvec_for_vis = np.array([[-20.5], [-2.4], [100]], tvec.dtype)
-        rvec_for_vis = rvec_fin.copy()
-        
-        # -- get pose (w, i, j, k, x, y, z) --
-        w, i, j, k = get_quaternion_from_rotation_matrix(R_new)
-        x = tvec_fin[0][0]
-        y = tvec_fin[1][0]
-        z = tvec_fin[2][0]
-        print("Command is x:{}, y:{}, z:{}, w:{}, i:{}, j:{}, k:{}, quaternion norm:{:.3f}".format(x, y, z, w, i, j, k, np.linalg.norm(np.array([w,i,j,k]))))
-        
-        # -- update aruco cube pose --
-        aruco_cube_pose.pose.position.x = x
-        aruco_cube_pose.pose.position.y = y
-        aruco_cube_pose.pose.position.z = z
-        aruco_cube_pose.pose.orientation.w = w
-        aruco_cube_pose.pose.orientation.x = x
-        aruco_cube_pose.pose.orientation.y = y
-        aruco_cube_pose.pose.orientation.z = z
-        
+            # -- draw aruco marker visualization --
+            # cv2.aruco.drawDetectedMarkers(canvas, corners, ids)
+            
+            # -- setup a relative rotation and translation between the observed face and the original face --
+            R_to_source_surface, translation = get_surface_transform(source_id, target_id)
+            
+            # -- conversion to other plane --
+            R, _ = cv2.Rodrigues(rvec) # get rotation matrix
+            R_new = np.matmul(R, R_to_source_surface.T) # apply relative rotation
+            rvec_fin, _ = cv2.Rodrigues(R_new, rvec_fin) # get back Rodrigues (since OpenCV prefers working with it)
+            tvec_rel = np.matmul(R, np.array(translation * ARUCO_CUBE_OUTER_SIZE, tvec.dtype)) # apply relative translation
+            to_cube_center_translation = np.matmul(R_new, np.array([0, 0, ARUCO_CUBE_OUTER_SIZE*0.5], tvec.dtype))[...,None]
+            tvec_fin = tvec + tvec_rel + to_cube_center_translation
+            
+            tvec_for_vis = np.array([[-20.5], [-2.4], [100]], tvec.dtype)
+            rvec_for_vis = rvec_fin.copy()
+            
+            # -- get pose (w, i, j, k, x, y, z) --
+            w, i, j, k = get_quaternion_from_rotation_matrix(R_new)
+            x = tvec_fin[0][0]
+            y = tvec_fin[1][0]
+            z = tvec_fin[2][0]
+            # print("Command is x:{}, y:{}, z:{}, w:{}, i:{}, j:{}, k:{}, quaternion norm:{:.3f}".format(x, y, z, w, i, j, k, np.linalg.norm(np.array([w,i,j,k]))))
+            
+            # -- update aruco cube pose --
+            aruco_cube_pose.pose.position.x = x
+            aruco_cube_pose.pose.position.y = y
+            aruco_cube_pose.pose.position.z = z
+            aruco_cube_pose.pose.orientation.w = w
+            aruco_cube_pose.pose.orientation.x = i
+            aruco_cube_pose.pose.orientation.y = j
+            aruco_cube_pose.pose.orientation.z = k
+        # -- do head aruco processing --
+        if head_aruco_index >= 0:
+            ok, head_aruco_rvec, head_aruco_tvec = cv2.solvePnP(head_aruco_obj_pnts, corners[head_aruco_index],cam_mat, dist, head_aruco_rvec, head_aruco_tvec)
+            
+            head_R, _ = cv2.Rodrigues(head_aruco_rvec)
+            head_w, head_i, head_j, head_k = get_quaternion_from_rotation_matrix(head_R)
+            head_x =head_aruco_tvec[0][0]
+            head_y =head_aruco_tvec[1][0]
+            head_z =head_aruco_tvec[2][0]
+            
+            # -- update head pose --
+            aruco_cube_pose.pose.position.x = head_x
+            aruco_cube_pose.pose.position.y = head_y
+            aruco_cube_pose.pose.position.z = head_z
+            aruco_cube_pose.pose.orientation.w = head_w
+            aruco_cube_pose.pose.orientation.x = head_i
+            aruco_cube_pose.pose.orientation.y = head_j
+            aruco_cube_pose.pose.orientation.z = head_k
+            
+            head_aruco_vis_tvec = np.array([[-20.5], [-16.5], [100]], head_aruco_tvec.dtype)
+            
         # -- visualization --
         if rvec_for_vis is not None and tvec_fin is not None and rvec_for_vis is not None and tvec_for_vis is not None:
             cv2.drawFrameAxes(canvas, cam_mat, dist, rvec_for_vis, tvec_fin, 1.5) # visualization of the inferred coordinates
-            cv2.drawFrameAxes(canvas, cam_mat, dist, rvec_for_vis, tvec_for_vis, 3.5) # visualization of the inferred coordinates
+            cv2.drawFrameAxes(canvas, cam_mat, dist, rvec_for_vis, tvec_for_vis, 3.5) # visualization of the orientation of the cube only, at the bottom-left
+        if head_aruco_rvec is not None and head_aruco_vis_tvec is not None:
+            cv2.drawFrameAxes(canvas, cam_mat, dist, head_aruco_rvec, head_aruco_vis_tvec, 2.5) # visualization of the orientation of the head only, at the top-left
         cv2.imshow("markers", canvas)
         cv2.imshow("raw", frame)
         k = cv2.waitKey(1)
@@ -416,13 +450,6 @@ def main():
             target_id = (target_id + 1) % 6
         elif k == ord('p'):
             target_id = source_id
-        
-        # ax.plot(numpy.array(tvec_fin[0]),    
-        #     numpy.array(tvec_fin[1]),    
-        #     numpy.array(tvec_fin[2]))    
-        # fig.canvas.draw()
-        # fig.canvas.flush_events()
-        # plt.draw()
 
 if __name__ == "__main__":
     main()
