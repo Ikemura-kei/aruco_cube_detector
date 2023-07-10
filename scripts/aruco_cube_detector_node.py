@@ -9,6 +9,8 @@ import crc16
 import time
 import subprocess
 
+VISUALIZATION = False
+
 # struct Pose
 # {
 #     // Position
@@ -456,17 +458,21 @@ def main():
     serial_device_disconnection_counter = 0
     last_serial_device_reconnection_attempt_time = time.time()
     
+    R = None
+    m1, m2 = cv2.initUndistortRectifyMap(cam_mat, dist, R, new_cam_mat, (test.shape[1], test.shape[0]), 5)
+    
     rate = rospy.Rate(1000)
     while not rospy.is_shutdown():
         rate.sleep()
         
         # -- publish data to ros topic for logging --
-        aruco_cube_pose.header.stamp = rospy.Time.now()
-        aruco_cube_pose.header.seq += 1
-        aruco_pose_pub.publish(aruco_cube_pose)
-        head_pose.header.stamp = rospy.Time.now()
-        head_pose.header.seq += 1
-        head_pose_pub.publish(head_pose)
+        if VISUALIZATION:
+            aruco_cube_pose.header.stamp = rospy.Time.now()
+            aruco_cube_pose.header.seq += 1
+            aruco_pose_pub.publish(aruco_cube_pose)
+            head_pose.header.stamp = rospy.Time.now()
+            head_pose.header.seq += 1
+            head_pose_pub.publish(head_pose)
         
         # -- send information --
         pose_data = struct.pack('ffffffffffffff', head_pose.pose.position.x, head_pose.pose.position.y, head_pose.pose.position.z \
@@ -499,11 +505,12 @@ def main():
         ret, frame = cap.read()
         
         if not ret:
-            if rvec_for_vis is not None and tvec_fin is not None and rvec_for_vis is not None and tvec_for_vis is not None:
-                cv2.drawFrameAxes(canvas, cam_mat, dist, rvec_for_vis, tvec_fin, 1.5) # visualization of the inferred coordinates
-                cv2.drawFrameAxes(canvas, cam_mat, dist, rvec_for_vis, tvec_for_vis, 3.5) # visualization of the orientation of the cube only, at the bottom-left
-            if head_aruco_rvec is not None and head_aruco_vis_tvec is not None:
-                cv2.drawFrameAxes(canvas, cam_mat, dist, head_aruco_rvec, head_aruco_vis_tvec, 2.5) # visualization of the orientation of the head only, at the top-left
+            if VISUALIZATION:
+                if rvec_for_vis is not None and tvec_fin is not None and rvec_for_vis is not None and tvec_for_vis is not None:
+                    cv2.drawFrameAxes(canvas, cam_mat, dist, rvec_for_vis, tvec_fin, 1.5) # visualization of the inferred coordinates
+                    cv2.drawFrameAxes(canvas, cam_mat, dist, rvec_for_vis, tvec_for_vis, 3.5) # visualization of the orientation of the cube only, at the bottom-left
+                if head_aruco_rvec is not None and head_aruco_vis_tvec is not None:
+                    cv2.drawFrameAxes(canvas, cam_mat, dist, head_aruco_rvec, head_aruco_vis_tvec, 2.5) # visualization of the orientation of the head only, at the top-left
             
             if (time.time() - last_camera_reconnection_attempt_time) > CAMERA_RECONNECTION_PERIOD:
                 last_camera_reconnection_attempt_time = time.time()
@@ -514,11 +521,12 @@ def main():
             
             camera_disconnection_counter += 1
             
-            cv2.imshow("markers", canvas)
-            cv2.imshow("raw", np.zeros_like(canvas))
-            k = cv2.waitKey(1)
-            if k == ord('q'):
-                break
+            if VISUALIZATION:
+                cv2.imshow("markers", canvas)
+                cv2.imshow("raw", np.zeros_like(canvas))
+                k = cv2.waitKey(1)
+                if k == ord('q'):
+                    break
             continue
         
         if camera_disconnection_counter > 0:
@@ -527,7 +535,8 @@ def main():
         
         # -- undistortion --
         dst = frame.copy()
-        dst = cv2.undistort(frame, cam_mat, dist, dst, new_cam_mat)
+        dst = cv2.remap(frame, m1, m2, cv2.INTER_LINEAR)
+        # dst = cv2.undistort(frame, cam_mat, dist, dst, new_cam_mat)
         
         # -- pre-processing --
         dst = image_preproc(dst, mode=1)
@@ -568,8 +577,9 @@ def main():
             to_cube_center_translation = np.matmul(R_new, np.array([0, 0, ARUCO_CUBE_OUTER_SIZE*0.5], tvec.dtype))[...,None]
             tvec_fin = tvec + tvec_rel + to_cube_center_translation
             
-            tvec_for_vis = np.array([[-20.5], [-2.4], [100]], tvec.dtype)
-            rvec_for_vis = rvec_fin.copy()
+            if VISUALIZATION:
+                tvec_for_vis = np.array([[-10.5], [-2.4], [25]], tvec.dtype)
+                rvec_for_vis = rvec_fin.copy()
             
             # -- get pose (w, i, j, k, x, y, z) --
             w, i, j, k = get_quaternion_from_rotation_matrix(R_new)
@@ -605,23 +615,24 @@ def main():
             head_pose.pose.orientation.y = head_j
             head_pose.pose.orientation.z = head_k
             
-            head_aruco_vis_tvec = np.array([[-20.5], [-16.5], [100]], head_aruco_tvec.dtype)
+            head_aruco_vis_tvec = np.array([[-10.5], [4.5], [25]], head_aruco_tvec.dtype)
             
         # -- visualization --
-        if rvec_for_vis is not None and tvec_fin is not None and rvec_for_vis is not None and tvec_for_vis is not None:
-            cv2.drawFrameAxes(canvas, cam_mat, dist, rvec_for_vis, tvec_fin, 1.5) # visualization of the inferred coordinates
-            cv2.drawFrameAxes(canvas, cam_mat, dist, rvec_for_vis, tvec_for_vis, 3.5) # visualization of the orientation of the cube only, at the bottom-left
-        if head_aruco_rvec is not None and head_aruco_vis_tvec is not None:
-            cv2.drawFrameAxes(canvas, cam_mat, dist, head_aruco_rvec, head_aruco_vis_tvec, 2.5) # visualization of the orientation of the head only, at the top-left
-        cv2.imshow("markers", canvas)
-        cv2.imshow("raw", frame)
-        k = cv2.waitKey(1)
-        if k == ord('q'):
-            break
-        elif k == ord('c'):
-            target_id = (target_id + 1) % 6
-        elif k == ord('p'):
-            target_id = source_id
+        if VISUALIZATION:
+            if rvec_for_vis is not None and tvec_fin is not None and rvec_for_vis is not None and tvec_for_vis is not None:
+                cv2.drawFrameAxes(canvas, cam_mat, dist, rvec_for_vis, tvec_fin, 1.5) # visualization of the inferred coordinates
+                cv2.drawFrameAxes(canvas, cam_mat, dist, rvec_for_vis, tvec_for_vis, 3.5) # visualization of the orientation of the cube only, at the bottom-left
+            if head_aruco_rvec is not None and head_aruco_vis_tvec is not None:
+                cv2.drawFrameAxes(canvas, cam_mat, dist, head_aruco_rvec, head_aruco_vis_tvec, 2.5) # visualization of the orientation of the head only, at the top-left
+            cv2.imshow("markers", canvas)
+            cv2.imshow("raw", frame)
+            k = cv2.waitKey(1)
+            if k == ord('q'):
+                break
+            elif k == ord('c'):
+                target_id = (target_id + 1) % 6
+            elif k == ord('p'):
+                target_id = source_id
 
 if __name__ == "__main__":
     main()
