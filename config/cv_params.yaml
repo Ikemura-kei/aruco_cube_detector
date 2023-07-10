@@ -1,0 +1,8 @@
+gaussian_blur_window_size: 9
+
+clahe_window_size: 5
+
+white_threshold: 191
+
+# {GAUSS_BLUR}{LAB_PROC}{WHITE_THRES}
+preproc_mode: "111"

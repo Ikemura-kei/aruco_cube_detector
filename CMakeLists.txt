@@ -13,6 +13,7 @@ find_package(catkin REQUIRED COMPONENTS
   rospy
   sensor_msgs
   std_msgs
+  dynamic_reconfigure
 )
 
 ## System dependencies are found with CMake's conventions
@@ -104,6 +105,11 @@ find_package(catkin REQUIRED COMPONENTS
 ## LIBRARIES: libraries you create in this project that dependent projects also need
 ## CATKIN_DEPENDS: catkin_packages dependent projects also need
 ## DEPENDS: system dependencies of this project that dependent projects also need
+
+generate_dynamic_reconfigure_options(
+  cfg/dynamic_config.cfg
+  #...
+)
 catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES aruco_cube_detector

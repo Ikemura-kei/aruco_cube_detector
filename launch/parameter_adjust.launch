@@ -2,8 +2,9 @@
 
 <node pkg="aruco_cube_detector" type="aruco_cube_detector_node.py" name="cube_detect" output="screen">
     <param name="config_file" value="$(find aruco_cube_detector)/config/camera_config.yaml" />
-    <param name="dynamic_param_config" value="false" />
+    <param name="dynamic_param_config" value="true" />
     <rosparam command="load" file="$(find aruco_cube_detector)/config/cv_params.yaml" />
 </node>
 
+<node pkg="rqt_reconfigure" type="rqt_reconfigure" name="aruco_cube_rqt_reconfigure" />
 </launch>

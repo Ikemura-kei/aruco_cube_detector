@@ -7,8 +7,12 @@ import struct
 import serial
 import time
 import subprocess
+from dynamic_reconfigure.server import Server
+from aruco_cube_detector.cfg import ArucoCubeDetectorConfig
 
-VISUALIZATION = False
+# -- operational configurations --
+VISUALIZATION = True
+USE_SERIAL = False
 
 # struct Pose
 # {
@@ -286,7 +290,28 @@ def get_surface_transform(source_id, target_id):
         elif (target_id == 5):
             return get_rotation_matrix_from_quaternion(*get_quaternion(np.array([1, 0, 0]), 0)), np.array([[0], [0], [0]]) # ok
 
+# -- image processing parameters, can be configured dynamically if in adjusting mode --
+GAUSSIAN_BLUR_WINDOW_SIZE = 9
+CLAHE_WINDOW_SIZE = 5
+WHITE_THRESHOLD = 190
+PREPROC_MODE = 1
+
+def callback(config, level):
+    global GAUSSIAN_BLUR_WINDOW_SIZE
+    global CLAHE_WINDOW_SIZE
+    global WHITE_THRESHOLD
+    global PREPROC_MODE
+
+    GAUSSIAN_BLUR_WINDOW_SIZE = config["gaussian_blur_window_size"] if config["gaussian_blur_window_size"] % 2 == 1 else (config["gaussian_blur_window_size"]+1)
+    CLAHE_WINDOW_SIZE = config["clahe_window_size"]
+    WHITE_THRESHOLD = config["white_threshold"]
+    PREPROC_MODE = int(config["preproc_mode"], 2) if len(config["preproc_mode"]) == 3 else PREPROC_MODE
+    return config
+
 def image_preproc(original_frame, mode=0):
+    global GAUSSIAN_BLUR_WINDOW_SIZE
+    global CLAHE_WINDOW_SIZE
+    global WHITE_THRESHOLD
     """Image preprocessing utility
 
     Args:
@@ -298,26 +323,30 @@ def image_preproc(original_frame, mode=0):
     """
     ret = original_frame.copy()
     
-    if mode == 0:
-        lab= cv2.cvtColor(original_frame, cv2.COLOR_BGR2LAB)
+    USE_GAUS_BLUR = int("100", 2)
+    USE_LAB_PROC = int("010", 2)
+    USE_WHITE_THRESHOLD = int("001", 2)
+    
+    if (mode & USE_WHITE_THRESHOLD) == USE_WHITE_THRESHOLD:
+        mask = np.where(((ret[...,0]>WHITE_THRESHOLD) * (ret[...,1]>WHITE_THRESHOLD) * (ret[...,2]>WHITE_THRESHOLD)), 255, 0).astype(np.uint8)
+        ret[np.tile(mask[...,None], (1,1,3))>0] = 255
+    if (mode & USE_LAB_PROC) == USE_LAB_PROC:
+        lab= cv2.cvtColor(ret, cv2.COLOR_BGR2LAB)
         l_channel, a, b = cv2.split(lab)
         # -- applying CLAHE to L-channel --
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(5,5))
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(CLAHE_WINDOW_SIZE,CLAHE_WINDOW_SIZE))
         cl = clahe.apply(l_channel)
         # -- merge the CLAHE enhanced L-channel with the a and b channel --
         limg = cv2.merge((cl,a,b))
         # -- converting image from LAB Color model to BGR color spcae --
         ret = cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
-    elif mode == 1:
-        ret = cv2.GaussianBlur(original_frame, (15, 13), 0)
-    elif mode == 2:
-        THRESHOLD = 185
-        mask = np.where(((ret[...,0]>THRESHOLD) * (ret[...,1]>THRESHOLD) * (ret[...,2]>THRESHOLD)), 255, 0).astype(np.uint8)
-        ret[np.tile(mask[...,None], (1,1,3))>0] = 255
+    if (mode & USE_GAUS_BLUR) == USE_GAUS_BLUR:
+        ret = cv2.GaussianBlur(ret, (GAUSSIAN_BLUR_WINDOW_SIZE, GAUSSIAN_BLUR_WINDOW_SIZE), 0)
     
     return ret
 
-CAMERA_SERIAL_ID = "usb-xhci-hcd.0.auto-1.4"
+# CAMERA_SERIAL_ID = "usb-xhci-hcd.0.auto-1.4"
+CAMERA_SERIAL_ID = "usb-0000:00:14.0-3"
 def find_camera_index():
     cam_idx = -1
     result = subprocess.run(['v4l2-ctl', '--list-devices'], stdout=subprocess.PIPE) # get camera index by hardware identifier
@@ -344,6 +373,11 @@ def find_serial_device():
     return device_name
         
 def main():
+    global GAUSSIAN_BLUR_WINDOW_SIZE
+    global CLAHE_WINDOW_SIZE
+    global WHITE_THRESHOLD
+    global PREPROC_MODE
+    
     # -- initialize ROS stuff --
     rospy.init_node("~aruco_cube_detector_node")
     print("--> Node initialized")
@@ -351,17 +385,18 @@ def main():
     head_pose_pub = rospy.Publisher("/head_pose", PoseStamped)
     
     # -- open serial port --
-    serial_device_name = find_serial_device()
-    if serial_device_name == "":
-        print("--> Serial device not found!!!")
-        while serial_device_name == "" and not rospy.is_shutdown():
-            print("--> Attempting to connect to serial device...")
-            serial_device_name = find_serial_device()
-            time.sleep(1)
-        print("--> Serial device connected!!!")
-            
-    ser = serial.Serial('/dev/'+serial_device_name, baudrate=460800)  # open serial port
-    print(ser.name)         # check which port was really used
+    if USE_SERIAL:
+        serial_device_name = find_serial_device()
+        if serial_device_name == "":
+            print("--> Serial device not found!!!")
+            while serial_device_name == "" and not rospy.is_shutdown():
+                print("--> Attempting to connect to serial device...")
+                serial_device_name = find_serial_device()
+                time.sleep(1)
+            print("--> Serial device connected!!!")
+                
+        ser = serial.Serial('/dev/'+serial_device_name, baudrate=460800)  # open serial port
+        print(ser.name)         # check which port was really used
     
     # -- initialize default cube pose --
     aruco_cube_pose = PoseStamped()
@@ -387,6 +422,18 @@ def main():
         print("--> Invalid configuration file path {}!".format(config_file_path))
         return
     print("--> Configuration file: {}".format(config_file_path))
+    
+    dynamic_param_config = rospy.get_param("~dynamic_param_config", default=False)
+    if dynamic_param_config:
+        srv = Server(ArucoCubeDetectorConfig, callback)
+        print("--> In dynamic parameter configuration mode")
+    
+    # -- image processing parameters --
+    GAUSSIAN_BLUR_WINDOW_SIZE = rospy.get_param("~gaussian_blur_window_size", GAUSSIAN_BLUR_WINDOW_SIZE)
+    CLAHE_WINDOW_SIZE = rospy.get_param("~clahe_window_size", CLAHE_WINDOW_SIZE)
+    WHITE_THRESHOLD = rospy.get_param("~white_threshold", WHITE_THRESHOLD)
+    PREPROC_MODE = int(rospy.get_param("~preproc_mode", PREPROC_MODE), 2)
+    print("--> Preproc mode {:03b}".format(PREPROC_MODE))
     
     # -- read camera parameters --
     fs = cv2.FileStorage(config_file_path, cv2.FILE_STORAGE_READ)
@@ -486,19 +533,20 @@ def main():
                 , crc)
         
         # -- send serial data, in line with re-connection attempt if disconnected --
-        try:
-            ser.write(data)
-            if serial_device_disconnection_counter > 0:
-                print("--> Serial device reconnected!!")
-                serial_device_disconnection_counter = 0 # device connected
-        except serial.SerialException as e:
-            if (time.time() - last_serial_device_reconnection_attempt_time) > SERIAL_DEVICE_RECONNECTION_PERIOD:
-                last_serial_device_reconnection_attempt_time = time.time()
-                print("--> Serial device disconnected, trying to re-initialize serial device...")
-                serial_device_name = find_serial_device()
-                if serial_device_name != "":
-                    ser = serial.Serial('/dev/'+serial_device_name, baudrate=460800)  # open serial port
-            serial_device_disconnection_counter += 1
+        if USE_SERIAL:
+            try:
+                ser.write(data)
+                if serial_device_disconnection_counter > 0:
+                    print("--> Serial device reconnected!!")
+                    serial_device_disconnection_counter = 0 # device connected
+            except serial.SerialException as e:
+                if (time.time() - last_serial_device_reconnection_attempt_time) > SERIAL_DEVICE_RECONNECTION_PERIOD:
+                    last_serial_device_reconnection_attempt_time = time.time()
+                    print("--> Serial device disconnected, trying to re-initialize serial device...")
+                    serial_device_name = find_serial_device()
+                    if serial_device_name != "":
+                        ser = serial.Serial('/dev/'+serial_device_name, baudrate=460800)  # open serial port
+                serial_device_disconnection_counter += 1
         
         # -- read frame in --
         ret, frame = cap.read()
@@ -538,7 +586,7 @@ def main():
         # dst = cv2.undistort(frame, cam_mat, dist, dst, new_cam_mat)
         
         # -- pre-processing --
-        dst = image_preproc(dst, mode=1)
+        dst = image_preproc(dst, mode=PREPROC_MODE)
         
         # -- detect aruco marker --
         (corners, ids, rejected) = cv2.aruco.detectMarkers(dst, arucoDict, parameters=arucoParams)
