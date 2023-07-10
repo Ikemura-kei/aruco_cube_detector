@@ -398,31 +398,32 @@ def main():
     print("--> Camera matrix\n{}".format(cam_mat))
     
     # -- initialize frame getter --
-    # camera_id = find_camera_index()
-    # print("--> Camera index {}".format(camera_id))
-    # if camera_id < 0:
-    #     print("--> Camera not found !!!!!")
-    #     attempt_cnt = 0
-    #     while camera_id < 0 and not rospy.is_shutdown():
-    #         attempt_cnt += 1
-    #         print("--> Trying to re-locate camera, attempt {}".format(attempt_cnt))
-    #         camera_id = find_camera_index()
-    #         time.sleep(1)
-    camera_id = 0
+    camera_id = find_camera_index()
+    print("--> Camera index {}".format(camera_id))
+    if camera_id < 0:
+        print("--> Camera not found !!!!!")
+        attempt_cnt = 0
+        while camera_id < 0 and not rospy.is_shutdown():
+            attempt_cnt += 1
+            print("--> Trying to re-locate camera, attempt {}".format(attempt_cnt))
+            camera_id = find_camera_index()
+            time.sleep(1)
+
     cap = cv2.VideoCapture(camera_id)
-    # ret, test = cap.read()
-    # if not ret:
-    #     print("--> Camera initialization failed!")
-    #     attempt_cnt = 0
+    ret, test = cap.read()
+    
+    if not ret:
+        print("--> Camera initialization failed!")
+        attempt_cnt = 0
         
-    #     while not ret and not rospy.is_shutdown():
-    #         attempt_cnt += 1
-    #         print("--> Trying to re-initialize camera, attempt {}".format(attempt_cnt))
-    #         camera_id = find_camera_index()
-    #         if camera_id >= 0:
-    #             cap = cv2.VideoCapture(camera_id)
-    #             ret, test = cap.read()
-    #         time.sleep(1)
+        while not ret and not rospy.is_shutdown():
+            attempt_cnt += 1
+            print("--> Trying to re-initialize camera, attempt {}".format(attempt_cnt))
+            camera_id = find_camera_index()
+            if camera_id >= 0:
+                cap = cv2.VideoCapture(camera_id)
+                ret, test = cap.read()
+            time.sleep(1)
     
     # -- later used for undistort --
     new_cam_mat = cam_mat.copy()
