@@ -5,7 +5,6 @@ import os
 from geometry_msgs.msg import PoseStamped
 import struct
 import serial
-import crc16
 import time
 import subprocess
 
