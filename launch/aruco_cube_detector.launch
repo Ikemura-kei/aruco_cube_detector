@@ -3,7 +3,7 @@
 <node pkg="aruco_cube_detector" type="aruco_cube_detector_node.py" name="cube_detect" output="screen">
     <param name="config_file" value="$(find aruco_cube_detector)/config/camera_config.yaml" />
     <param name="dynamic_param_config" value="false" />
-    <rosparam command="load" file="$(find aruco_cube_detector)/config/cv_params.yaml" />
+    <rosparam command="load" file="$(find aruco_cube_detector)/config/cv_params_dump_file.yaml" />
 </node>
 
 </launch>
