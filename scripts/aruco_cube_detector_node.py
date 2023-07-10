@@ -303,7 +303,7 @@ def image_preproc(original_frame, mode=0):
         lab= cv2.cvtColor(original_frame, cv2.COLOR_BGR2LAB)
         l_channel, a, b = cv2.split(lab)
         # -- applying CLAHE to L-channel --
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(5,5))
         cl = clahe.apply(l_channel)
         # -- merge the CLAHE enhanced L-channel with the a and b channel --
         limg = cv2.merge((cl,a,b))
@@ -562,9 +562,6 @@ def main():
                 if ids[i][0] == source_id:
                     source_index = i
             ok, rvec, tvec = cv2.solvePnP(aruco_cube_aruco_obj_pnts, corners[source_index],cam_mat, dist, rvec, tvec)
-
-            # -- draw aruco marker visualization --
-            # cv2.aruco.drawDetectedMarkers(canvas, corners, ids)
             
             # -- setup a relative rotation and translation between the observed face and the original face --
             R_to_source_surface, translation = get_surface_transform(source_id, target_id)
@@ -619,6 +616,8 @@ def main():
             
         # -- visualization --
         if VISUALIZATION:
+            # -- draw aruco marker visualization --
+            cv2.aruco.drawDetectedMarkers(canvas, corners, ids)
             if rvec_for_vis is not None and tvec_fin is not None and rvec_for_vis is not None and tvec_for_vis is not None:
                 cv2.drawFrameAxes(canvas, cam_mat, dist, rvec_for_vis, tvec_fin, 1.5) # visualization of the inferred coordinates
                 cv2.drawFrameAxes(canvas, cam_mat, dist, rvec_for_vis, tvec_for_vis, 3.5) # visualization of the orientation of the cube only, at the bottom-left
