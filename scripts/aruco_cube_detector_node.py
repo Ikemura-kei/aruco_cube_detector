@@ -9,6 +9,7 @@ import time
 import subprocess
 from dynamic_reconfigure.server import Server
 from aruco_cube_detector.cfg import ArucoCubeDetectorConfig
+import yaml
 
 # -- operational configurations --
 VISUALIZATION = True
@@ -305,7 +306,7 @@ def callback(config, level):
     GAUSSIAN_BLUR_WINDOW_SIZE = config["gaussian_blur_window_size"] if config["gaussian_blur_window_size"] % 2 == 1 else (config["gaussian_blur_window_size"]+1)
     CLAHE_WINDOW_SIZE = config["clahe_window_size"]
     WHITE_THRESHOLD = config["white_threshold"]
-    PREPROC_MODE = int(config["preproc_mode"], 2) if len(config["preproc_mode"]) == 3 else PREPROC_MODE
+    PREPROC_MODE = config["preproc_mode"] if len(config["preproc_mode"]) == 3 else PREPROC_MODE
     return config
 
 def image_preproc(original_frame, mode=0):
@@ -423,6 +424,8 @@ def main():
         return
     print("--> Configuration file: {}".format(config_file_path))
     
+    cv_param_file = rospy.get_param("~cv_param_file", default="")
+    
     dynamic_param_config = rospy.get_param("~dynamic_param_config", default=False)
     if dynamic_param_config:
         srv = Server(ArucoCubeDetectorConfig, callback)
@@ -432,8 +435,8 @@ def main():
     GAUSSIAN_BLUR_WINDOW_SIZE = rospy.get_param("~gaussian_blur_window_size", GAUSSIAN_BLUR_WINDOW_SIZE)
     CLAHE_WINDOW_SIZE = rospy.get_param("~clahe_window_size", CLAHE_WINDOW_SIZE)
     WHITE_THRESHOLD = rospy.get_param("~white_threshold", WHITE_THRESHOLD)
-    PREPROC_MODE = int(rospy.get_param("~preproc_mode", PREPROC_MODE), 2)
-    print("--> Preproc mode {:03b}".format(PREPROC_MODE))
+    PREPROC_MODE = rospy.get_param("~preproc_mode", PREPROC_MODE)
+    print("--> Preproc mode {:03b}".format(int(PREPROC_MODE, 2)))
     
     # -- read camera parameters --
     fs = cv2.FileStorage(config_file_path, cv2.FILE_STORAGE_READ)
@@ -586,7 +589,7 @@ def main():
         # dst = cv2.undistort(frame, cam_mat, dist, dst, new_cam_mat)
         
         # -- pre-processing --
-        dst = image_preproc(dst, mode=PREPROC_MODE)
+        dst = image_preproc(dst, mode=int(PREPROC_MODE, 2))
         
         # -- detect aruco marker --
         (corners, ids, rejected) = cv2.aruco.detectMarkers(dst, arucoDict, parameters=arucoParams)
@@ -679,6 +682,16 @@ def main():
                 target_id = (target_id + 1) % 6
             elif k == ord('p'):
                 target_id = source_id
+                
+    # -- exited from while --
+    if dynamic_param_config:
+        # -- save config --
+        dict_file = {"gaussian_blur_window_size": GAUSSIAN_BLUR_WINDOW_SIZE, \
+            "clahe_window_size": CLAHE_WINDOW_SIZE, \
+                "white_threshold": WHITE_THRESHOLD, \
+                    "preproc_mode": PREPROC_MODE}
+        with open(cv_param_file, 'w') as file:
+            documents = yaml.dump(dict_file, file)
 
 if __name__ == "__main__":
     main()
