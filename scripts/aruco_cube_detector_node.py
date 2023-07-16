@@ -586,7 +586,6 @@ def main():
         # -- undistortion --
         dst = frame.copy()
         dst = cv2.remap(frame, m1, m2, cv2.INTER_LINEAR)
-        # dst = cv2.undistort(frame, cam_mat, dist, dst, new_cam_mat)
         
         # -- pre-processing --
         dst = image_preproc(dst, mode=int(PREPROC_MODE, 2))
