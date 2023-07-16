@@ -346,8 +346,8 @@ def image_preproc(original_frame, mode=0):
     
     return ret
 
-# CAMERA_SERIAL_ID = "usb-xhci-hcd.0.auto-1.4"
-CAMERA_SERIAL_ID = "usb-0000:00:14.0-3"
+CAMERA_SERIAL_ID = "usb-xhci-hcd.0.auto-1.4"
+# CAMERA_SERIAL_ID = "usb-0000:00:14.0-3"
 def find_camera_index():
     cam_idx = -1
     result = subprocess.run(['v4l2-ctl', '--list-devices'], stdout=subprocess.PIPE) # get camera index by hardware identifier
@@ -509,6 +509,7 @@ def main():
     
     R = None
     m1, m2 = cv2.initUndistortRectifyMap(cam_mat, dist, R, new_cam_mat, (test.shape[1], test.shape[0]), 5)
+    cnt = 0
     
     rate = rospy.Rate(1000)
     while not rospy.is_shutdown():
@@ -573,10 +574,10 @@ def main():
             
             if VISUALIZATION:
                 cv2.imshow("markers", canvas)
-                cv2.imshow("raw", np.zeros_like(canvas))
                 k = cv2.waitKey(1)
                 if k == ord('q'):
                     break
+                
             continue
         
         if camera_disconnection_counter > 0:
@@ -600,6 +601,12 @@ def main():
                 head_aruco_index = i
             else:
                 source_id = ids[i][0] # use the first found aruco as the source
+
+        if len(corners) <= 0:
+            cnt += 1
+            if cnt < 40 and cnt >= 10:
+                save_f = "/home/pi/Desktop/save_"+str(cnt)+".png"
+                cv2.imwrite(save_f, canvas)
         
         # TODO: maybe multi-processing at here is a required optimization (depends on the actual performance)
         # -- do aruco cube processing --
@@ -673,7 +680,6 @@ def main():
             if head_aruco_rvec is not None and head_aruco_vis_tvec is not None:
                 cv2.drawFrameAxes(canvas, cam_mat, dist, head_aruco_rvec, head_aruco_vis_tvec, 2.5) # visualization of the orientation of the head only, at the top-left
             cv2.imshow("markers", canvas)
-            cv2.imshow("raw", frame)
             k = cv2.waitKey(1)
             if k == ord('q'):
                 break
@@ -681,6 +687,10 @@ def main():
                 target_id = (target_id + 1) % 6
             elif k == ord('p'):
                 target_id = source_id
+            elif k == ord('b'):
+                save_f = "/home/pi/Desktop/save_"+str(cnt)+".png"
+                cv2.imwrite(save_f, canvas)
+                cnt+=1
                 
     # -- exited from while --
     if dynamic_param_config:
