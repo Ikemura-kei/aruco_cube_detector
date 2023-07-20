@@ -2,11 +2,11 @@ import cv2
 from cv2 import aruco
 import os
 
-save_dir = "../arucos"
-num_mark = 7 # number of markers
+save_dir = "../arucos/for_calibration"
+num_mark = 1 # number of markers
 size_mark = 500 # size of markers
 
-dict_aruco = aruco.Dictionary_get(aruco.DICT_4X4_50)
+dict_aruco = aruco.Dictionary_get(aruco.DICT_6X6_50)
 
 for count in range(num_mark) :
     id_mark = count
