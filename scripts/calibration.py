@@ -140,7 +140,7 @@ def single_camera_calibration(row, col, img_folder, tile_size, verbose):
 if __name__ == "__main__":
     parser = ArgumentParser(description="stereo calibration")
 
-    parser.add_argument('--img_folder', type=str, required=True, help="the parent folder to the calibration images, this folder should contain two subfolders named 'left' and 'right' containing the respective calibration images.")
+    parser.add_argument('--img_folder', type=str, required=True, help="the parent folder to the calibration images")
     parser.add_argument('-r', type=int, required=True, dest='row', help="the number of rows on the chessboard pattern.")
     parser.add_argument('-c', type=int, required=True, dest='col', help="the number of columns on the chessboard pattern.")
     parser.add_argument('--tile_size', type=float, required=True, help="the size of each tile on the chessboard patter, specified in mm.")

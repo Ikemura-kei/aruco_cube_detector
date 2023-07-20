@@ -347,6 +347,21 @@ def image_preproc(original_frame, mode=0):
     
     return ret
 
+def get_euler_zyx_from_quaternion(w, i, j, k):
+    sinr_cosp = 2 * (w * i + j * k)
+    cosr_cosp = 1 - 2 * (i * i + j * j)
+    roll = np.arctan2(sinr_cosp, cosr_cosp)
+
+    sinp = np.sqrt(1 + 2 * (w * j - i * k))
+    cosp = np.sqrt(1 - 2 * (w * j - i * k))
+    pitch = 2 * np.arctan2(sinp, cosp) - np.pi / 2
+
+    siny_cosp = 2 * (w * k + i * j)
+    cosy_cosp = 1 - 2 * (j * j + k * k)
+    yaw = np.arctan2(siny_cosp, cosy_cosp)
+    
+    return yaw, pitch, roll
+
 # CAMERA_SERIAL_ID = "usb-xhci-hcd.0.auto-1.4"
 CAMERA_SERIAL_ID = "usb-0000:00:14.0-3"
 def find_camera_index():
@@ -377,6 +392,7 @@ def find_serial_device():
 def cal_speed(aruco_speeds_one_axis):
     return aruco_speeds_one_axis[0] * 0.05 + aruco_speeds_one_axis[1] * 0.05 + aruco_speeds_one_axis[2] * 0.1 + aruco_speeds_one_axis[3] * 0.15 + aruco_speeds_one_axis[4] * (0.65 + 0.175114514) # account for acceleration, since we assume the tracking lost is mostly due to acceleration which leads to motion blur
 
+is_calibration = True
 def main():
     global GAUSSIAN_BLUR_WINDOW_SIZE
     global CLAHE_WINDOW_SIZE
@@ -486,8 +502,12 @@ def main():
     # -- initialize aruco detector --
     arucoDict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
     arucoParams = cv2.aruco.DetectorParameters_create()
+    arucoDictForCalibration = cv2.aruco.Dictionary_get(cv2.aruco.DICT_6X6_50)
+    arucoParamsForCalibration = cv2.aruco.DetectorParameters_create()
     
     # -- constant definitions --
+    CALIBRATION_ARUCO_SIZE = 65
+    HALF_CALIBRATION_ARUCO_SIZE = CALIBRATION_ARUCO_SIZE / 2.0
     ARUCO_CUBE_OUTER_SIZE = 23.5
     ARUCO_CUBE_ARUCO_SIZE = 20
     HALF_ARUCO_CUBE_ARUCO_SIZE = ARUCO_CUBE_ARUCO_SIZE / 2.0
@@ -503,6 +523,7 @@ def main():
     # -- static variables --
     # object points for solvePnP 
     aruco_cube_aruco_obj_pnts = np.array([[-HALF_ARUCO_CUBE_ARUCO_SIZE, -HALF_ARUCO_CUBE_ARUCO_SIZE, 0], [HALF_ARUCO_CUBE_ARUCO_SIZE, -HALF_ARUCO_CUBE_ARUCO_SIZE, 0], [HALF_ARUCO_CUBE_ARUCO_SIZE, HALF_ARUCO_CUBE_ARUCO_SIZE, 0], [-HALF_ARUCO_CUBE_ARUCO_SIZE, HALF_ARUCO_CUBE_ARUCO_SIZE, 0]]).astype(np.float32)
+    calibration_aruco_obj_pnts = np.array([[-HALF_CALIBRATION_ARUCO_SIZE, -HALF_CALIBRATION_ARUCO_SIZE, 0], [HALF_CALIBRATION_ARUCO_SIZE, -HALF_CALIBRATION_ARUCO_SIZE, 0], [HALF_CALIBRATION_ARUCO_SIZE, HALF_CALIBRATION_ARUCO_SIZE, 0], [-HALF_CALIBRATION_ARUCO_SIZE, HALF_CALIBRATION_ARUCO_SIZE, 0]]).astype(np.float32)
     head_aruco_obj_pnts= np.array([[-HALF_HEAD_ARUCO_SIZE, -HALF_HEAD_ARUCO_SIZE, 0], [HALF_HEAD_ARUCO_SIZE, -HALF_HEAD_ARUCO_SIZE, 0], [HALF_HEAD_ARUCO_SIZE, HALF_HEAD_ARUCO_SIZE, 0], [-HALF_HEAD_ARUCO_SIZE, HALF_HEAD_ARUCO_SIZE, 0]]).astype(np.float32)
     head_aruco_index = -1
     target_id = 0
@@ -530,49 +551,12 @@ def main():
     while not rospy.is_shutdown():
         rate.sleep()
         
-        # -- publish data to ros topic for logging --
-        if VISUALIZATION:
-            aruco_cube_pose.header.stamp = rospy.Time.now()
-            aruco_cube_pose.header.seq += 1
-            aruco_pose_pub.publish(aruco_cube_pose)
-            head_pose.header.stamp = rospy.Time.now()
-            head_pose.header.seq += 1
-            head_pose_pub.publish(head_pose)
-        
-        # -- send information --
-        pose_data = struct.pack('ffffffffffffff', head_pose.pose.position.x, head_pose.pose.position.y, head_pose.pose.position.z \
-            , head_pose.pose.orientation.w, head_pose.pose.orientation.x, head_pose.pose.orientation.y, head_pose.pose.orientation.z \
-                , aruco_cube_pose.pose.position.x, aruco_cube_pose.pose.position.y, aruco_cube_pose.pose.position.z \
-            , aruco_cube_pose.pose.orientation.w, aruco_cube_pose.pose.orientation.x, aruco_cube_pose.pose.orientation.y, aruco_cube_pose.pose.orientation.z)
-        crc = crc16(pose_data)
-        data = struct.pack('ffffffffffffffH', head_pose.pose.position.x, head_pose.pose.position.y, head_pose.pose.position.z \
-            , head_pose.pose.orientation.w, head_pose.pose.orientation.x, head_pose.pose.orientation.y, head_pose.pose.orientation.z \
-                , aruco_cube_pose.pose.position.x, aruco_cube_pose.pose.position.y, aruco_cube_pose.pose.position.z \
-            , aruco_cube_pose.pose.orientation.w, aruco_cube_pose.pose.orientation.x, aruco_cube_pose.pose.orientation.y, aruco_cube_pose.pose.orientation.z \
-                , crc)
-        
-        # -- send serial data, in line with re-connection attempt if disconnected --
-        if USE_SERIAL:
-            try:
-                ser.write(data)
-                if serial_device_disconnection_counter > 0:
-                    print("--> Serial device reconnected!!")
-                    serial_device_disconnection_counter = 0 # device connected
-            except serial.SerialException as e:
-                if (time.time() - last_serial_device_reconnection_attempt_time) > SERIAL_DEVICE_RECONNECTION_PERIOD:
-                    last_serial_device_reconnection_attempt_time = time.time()
-                    print("--> Serial device disconnected, trying to re-initialize serial device...")
-                    serial_device_name = find_serial_device()
-                    if serial_device_name != "":
-                        ser = serial.Serial('/dev/'+serial_device_name, baudrate=460800)  # open serial port
-                serial_device_disconnection_counter += 1
-        
         # -- read frame in --
         ret, frame = cap.read()
-        # print(frame.shape)
-        # exit()
+        
+        # -- handle camera disconnection --
         if not ret:
-            if VISUALIZATION:
+            if VISUALIZATION and not is_calibration:
                 if rvec_for_vis is not None and tvec_fin is not None and rvec_for_vis is not None and tvec_for_vis is not None:
                     cv2.drawFrameAxes(canvas, cam_mat, dist, rvec_for_vis, tvec_fin, 1.5) # visualization of the inferred coordinates
                     cv2.drawFrameAxes(canvas, cam_mat, dist, rvec_for_vis, tvec_for_vis, 3.5) # visualization of the orientation of the cube only, at the bottom-left
@@ -607,155 +591,219 @@ def main():
         # -- pre-processing --
         dst = image_preproc(dst, mode=int(PREPROC_MODE, 2))
         
-        # -- detect aruco marker --
-        (corners, ids, rejected) = cv2.aruco.detectMarkers(dst, arucoDict, parameters=arucoParams)
-        canvas = dst.copy()
-        source_id = -1 # initialize as -1
-        head_aruco_index = -1 # initialize as -1
-        for i in range(len(corners)):
-            if ids[i] == HEAD_ARUCO_ID:
-                head_aruco_index = i
-            else:
-                source_id = ids[i][0] # use the first found aruco as the source
+        # -- act depending on the current mode {calibration or detection} --
+        if is_calibration:
+            (corners, ids, rejected) = cv2.aruco.detectMarkers(dst, arucoDictForCalibration, parameters=arucoParamsForCalibration)
+            canvas = dst.copy()
 
-        # head aruco not detected
-        if head_aruco_index < 0:
+            calibration_pattern_index = 0
+            if ids is not None and 0 in ids: # calibration pattern detected
+                # -- find the index of the interested pattern --
+                for i in range(len(ids)):
+                    if ids[i][0] == 0:
+                        calibration_pattern_index = i
+                        break
+                
+                # -- solve for position and orientation --
+                rvec, tvec = 0, 0
+                ok, rvec, tvec = cv2.solvePnP(calibration_aruco_obj_pnts, corners[calibration_pattern_index], cam_mat, dist, rvec, tvec)
+                ok, R = cv2.Rodrigues(rvec)
+                w, i, j, k = get_quaternion_from_rotation_matrix(R)
+                
+                # -- draw detected pattern --
+                if VISUALIZATION:
+                    cv2.aruco.drawDetectedMarkers(canvas, corners, ids[calibration_pattern_index])
+                    cv2.drawFrameAxes(canvas, cam_mat, dist, rvec, tvec, 15, 2)
+                    yaw, pitch, roll = get_euler_zyx_from_quaternion(w, i, j, k)
+                    print("--> Roll {:3f}, pitch {:3f}, yaw {:3f}".format(roll, pitch, yaw))
+                    print("--> Position x {}, y {}, z {}".format(tvec[0][0], tvec[1][0], tvec[2][0]))
+            
             if VISUALIZATION:
-                cnt += 1
-                if cnt < 40 and cnt >= 10:
+                cv2.imshow("canvas", canvas)
+                k = cv2.waitKey(1)
+                if k == ord('q'):
+                    break
+        else:
+            # -- publish data to ros topic for logging --
+            if VISUALIZATION:
+                aruco_cube_pose.header.stamp = rospy.Time.now()
+                aruco_cube_pose.header.seq += 1
+                aruco_pose_pub.publish(aruco_cube_pose)
+                head_pose.header.stamp = rospy.Time.now()
+                head_pose.header.seq += 1
+                head_pose_pub.publish(head_pose)
+            
+            # -- send information --
+            pose_data = struct.pack('ffffffffffffff', head_pose.pose.position.x, head_pose.pose.position.y, head_pose.pose.position.z \
+                , head_pose.pose.orientation.w, head_pose.pose.orientation.x, head_pose.pose.orientation.y, head_pose.pose.orientation.z \
+                    , aruco_cube_pose.pose.position.x, aruco_cube_pose.pose.position.y, aruco_cube_pose.pose.position.z \
+                , aruco_cube_pose.pose.orientation.w, aruco_cube_pose.pose.orientation.x, aruco_cube_pose.pose.orientation.y, aruco_cube_pose.pose.orientation.z)
+            crc = crc16(pose_data)
+            data = struct.pack('ffffffffffffffH', head_pose.pose.position.x, head_pose.pose.position.y, head_pose.pose.position.z \
+                , head_pose.pose.orientation.w, head_pose.pose.orientation.x, head_pose.pose.orientation.y, head_pose.pose.orientation.z \
+                    , aruco_cube_pose.pose.position.x, aruco_cube_pose.pose.position.y, aruco_cube_pose.pose.position.z \
+                , aruco_cube_pose.pose.orientation.w, aruco_cube_pose.pose.orientation.x, aruco_cube_pose.pose.orientation.y, aruco_cube_pose.pose.orientation.z \
+                    , crc)
+            
+            # -- send serial data, in line with re-connection attempt if disconnected --
+            if USE_SERIAL:
+                try:
+                    ser.write(data)
+                    if serial_device_disconnection_counter > 0:
+                        print("--> Serial device reconnected!!")
+                        serial_device_disconnection_counter = 0 # device connected
+                except serial.SerialException as e:
+                    if (time.time() - last_serial_device_reconnection_attempt_time) > SERIAL_DEVICE_RECONNECTION_PERIOD:
+                        last_serial_device_reconnection_attempt_time = time.time()
+                        print("--> Serial device disconnected, trying to re-initialize serial device...")
+                        serial_device_name = find_serial_device()
+                        if serial_device_name != "":
+                            ser = serial.Serial('/dev/'+serial_device_name, baudrate=460800)  # open serial port
+                    serial_device_disconnection_counter += 1
+            
+            # -- detect aruco marker --
+            (corners, ids, rejected) = cv2.aruco.detectMarkers(dst, arucoDict, parameters=arucoParams)
+            canvas = dst.copy()
+            source_id = -1 # initialize as -1
+            head_aruco_index = -1 # initialize as -1
+            for i in range(len(corners)):
+                if ids[i] == HEAD_ARUCO_ID:
+                    head_aruco_index = i
+                else:
+                    source_id = ids[i][0] # use the first found aruco as the source
+
+            # head aruco not detected
+            if head_aruco_index < 0:
+                if (time.time() - last_head_update_time) <= MAX_LOST_TIME:
+                    dt = time.time() - last_head_update_time
+                    cur_pos_pred = [(last_head_pos[0] + head_speed[0] * dt), (last_head_pos[1] + head_speed[1] * dt), (last_head_pos[2] + head_speed[2] * dt)]
+                    head_pose.pose.position.x = cur_pos_pred[0]
+                    head_pose.pose.position.y = cur_pos_pred[1]
+                    head_pose.pose.position.z = cur_pos_pred[2]
+                    # print("--> Lost, extrapolated position: {}".format(cur_pos_pred))
+                else:
+                    head_pose.pose.position.x = ERROR_CODE # ERROR_CODE to indicate error
+                    head_pose.pose.position.y = ERROR_CODE # ERROR_CODE to indicate error
+                    head_pose.pose.position.z = ERROR_CODE # ERROR_CODE to indicate error
+
+            # aruco cube not detected
+            if source_id not in [0, 1, 2, 3, 4, 5]:
+                if (time.time() - last_cube_update_time) <= MAX_LOST_TIME:
+                    dt = time.time() - last_cube_update_time
+                    cur_pos_pred = [(last_cube_pos[0] + cube_speed[0] * dt), (last_cube_pos[1] + cube_speed[1] * dt), (last_cube_pos[2] + cube_speed[2] * dt)]
+                    tvec_fin[0][0] = aruco_cube_pose.pose.position.x = cur_pos_pred[0]
+                    tvec_fin[1][0] = aruco_cube_pose.pose.position.y = cur_pos_pred[1]
+                    tvec_fin[2][0] = aruco_cube_pose.pose.position.z = cur_pos_pred[2]
+                    # print("--> Lost, extrapolated position: {}".format(cur_pos_pred))
+                else:
+                    aruco_cube_pose.pose.position.x = ERROR_CODE # ERROR_CODE to indicate error
+                    aruco_cube_pose.pose.position.y = ERROR_CODE # ERROR_CODE to indicate error
+                    aruco_cube_pose.pose.position.z = ERROR_CODE # ERROR_CODE to indicate error
+            
+            # TODO: maybe multi-processing at here is a required optimization (depends on the actual performance)
+            # -- do aruco cube processing --
+            if len(corners) >= 0 and source_id in [0, 1, 2, 3, 4, 5]:
+                # print("--> Source id: {}, Target id: {}".format(source_id, target_id))
+                # -- estimate the pose of each aruco marker --
+                R, R_new, rvec, tvec, rvec_fin = None, None, None, None, None
+                for i in range(len(corners)):
+                    if ids[i][0] == source_id:
+                        source_index = i
+                ok, rvec, tvec = cv2.solvePnP(aruco_cube_aruco_obj_pnts, corners[source_index],cam_mat, dist, rvec, tvec)
+                
+                # -- setup a relative rotation and translation between the observed face and the original face --
+                R_to_source_surface, translation = get_surface_transform(source_id, target_id)
+                
+                # -- conversion to other plane --
+                R, _ = cv2.Rodrigues(rvec) # get rotation matrix
+                R_new = np.matmul(R, R_to_source_surface.T) # apply relative rotation
+                rvec_fin, _ = cv2.Rodrigues(R_new, rvec_fin) # get back Rodrigues (since OpenCV prefers working with it)
+                tvec_rel = np.matmul(R, np.array(translation * ARUCO_CUBE_OUTER_SIZE, tvec.dtype)) # apply relative translation
+                to_cube_center_translation = np.matmul(R_new, np.array([0, 0, ARUCO_CUBE_OUTER_SIZE*0.5], tvec.dtype))[...,None]
+                tvec_fin = tvec + tvec_rel + to_cube_center_translation
+                
+                if VISUALIZATION:
+                    tvec_for_vis = np.array([[-10.5], [-2.4], [25]], tvec.dtype)
+                    rvec_for_vis = rvec_fin.copy()
+                
+                # -- get pose (w, i, j, k, x, y, z) --
+                w, i, j, k = get_quaternion_from_rotation_matrix(R_new)
+                x = tvec_fin[0][0]
+                y = tvec_fin[1][0]
+                z = tvec_fin[2][0]
+                # print("Command is x:{}, y:{}, z:{}, w:{}, i:{}, j:{}, k:{}, quaternion norm:{:.3f}".format(x, y, z, w, i, j, k, np.linalg.norm(np.array([w,i,j,k]))))
+                
+                # -- update aruco cube pose --
+                aruco_cube_pose.pose.position.x = x
+                aruco_cube_pose.pose.position.y = y
+                aruco_cube_pose.pose.position.z = z
+                aruco_cube_pose.pose.orientation.w = w
+                aruco_cube_pose.pose.orientation.x = i
+                aruco_cube_pose.pose.orientation.y = j
+                aruco_cube_pose.pose.orientation.z = k
+
+                dt = time.time() - last_cube_update_time
+                aruco_cube_speeds.append([(x - last_cube_pos[0]) / dt, (y - last_cube_pos[1]) / dt, (z - last_cube_pos[2]) / dt])
+                last_cube_pos = [x, y, z]
+                last_cube_update_time = time.time()
+
+                if len(aruco_cube_speeds) > SPEEDS_LEN:
+                    aruco_cube_speeds.pop(0)
+                np_aruco_speeds = np.array(aruco_cube_speeds)
+                cube_speed = [cal_speed(np_aruco_speeds[:,0]), cal_speed(np_aruco_speeds[:,1]), cal_speed(np_aruco_speeds[:,2])]
+
+            # -- do head aruco processing --
+            if head_aruco_index >= 0:
+                ok, head_aruco_rvec, head_aruco_tvec = cv2.solvePnP(head_aruco_obj_pnts, corners[head_aruco_index],cam_mat, dist, head_aruco_rvec, head_aruco_tvec)
+                
+                head_R, _ = cv2.Rodrigues(head_aruco_rvec)
+                head_w, head_i, head_j, head_k = get_quaternion_from_rotation_matrix(head_R)
+                head_x =head_aruco_tvec[0][0]
+                head_y =head_aruco_tvec[1][0]
+                head_z =head_aruco_tvec[2][0]
+                
+                # -- update head pose --
+                head_pose.pose.position.x = head_x
+                head_pose.pose.position.y = head_y
+                head_pose.pose.position.z = head_z
+                head_pose.pose.orientation.w = head_w
+                head_pose.pose.orientation.x = head_i
+                head_pose.pose.orientation.y = head_j
+                head_pose.pose.orientation.z = head_k
+                
+                head_aruco_vis_tvec = np.array([[-10.5], [4.5], [25]], head_aruco_tvec.dtype)
+
+                dt = time.time() - last_head_update_time
+                head_aruco_speeds.append([(head_x - last_head_pos[0]) / dt, (head_y - last_head_pos[1]) / dt, (head_z - last_head_pos[2]) / dt])
+                last_head_pos = [head_x, head_y, head_z]
+                last_head_update_time = time.time()
+
+                if len(head_aruco_speeds) > SPEEDS_LEN:
+                    head_aruco_speeds.pop(0)
+                np_aruco_speeds = np.array(head_aruco_speeds)
+                head_speed = [cal_speed(np_aruco_speeds[:,0]), cal_speed(np_aruco_speeds[:,1]), cal_speed(np_aruco_speeds[:,2])]
+                
+            # -- visualization --
+            if VISUALIZATION:
+                # -- draw aruco marker visualization --
+                cv2.aruco.drawDetectedMarkers(canvas, corners, ids)
+                if rvec_for_vis is not None and tvec_fin is not None and rvec_for_vis is not None and tvec_for_vis is not None:
+                    cv2.drawFrameAxes(canvas, cam_mat, dist, rvec_for_vis, tvec_fin, 1.5) # visualization of the inferred coordinates
+                    cv2.drawFrameAxes(canvas, cam_mat, dist, rvec_for_vis, tvec_for_vis, 3.5) # visualization of the orientation of the cube only, at the bottom-left
+                if head_aruco_rvec is not None and head_aruco_vis_tvec is not None:
+                    cv2.drawFrameAxes(canvas, cam_mat, dist, head_aruco_rvec, head_aruco_vis_tvec, 2.5) # visualization of the orientation of the head only, at the top-left
+                cv2.imshow("markers", canvas)
+                k = cv2.waitKey(1)
+                if k == ord('q'):
+                    break
+                elif k == ord('c'):
+                    target_id = (target_id + 1) % 6
+                elif k == ord('p'):
+                    target_id = source_id
+                elif k == ord('b'):
                     save_f = "/home/pi/Desktop/save_"+str(cnt)+".png"
                     cv2.imwrite(save_f, canvas)
-            
-            if (time.time() - last_head_update_time) <= MAX_LOST_TIME:
-                dt = time.time() - last_head_update_time
-                cur_pos_pred = [(last_head_pos[0] + head_speed[0] * dt), (last_head_pos[1] + head_speed[1] * dt), (last_head_pos[2] + head_speed[2] * dt)]
-                head_pose.pose.position.x = cur_pos_pred[0]
-                head_pose.pose.position.y = cur_pos_pred[1]
-                head_pose.pose.position.z = cur_pos_pred[2]
-                # print("--> Lost, extrapolated position: {}".format(cur_pos_pred))
-            else:
-                head_pose.pose.position.x = ERROR_CODE # ERROR_CODE to indicate error
-                head_pose.pose.position.y = ERROR_CODE # ERROR_CODE to indicate error
-                head_pose.pose.position.z = ERROR_CODE # ERROR_CODE to indicate error
-
-        # aruco cube not detected
-        if source_id not in [0, 1, 2, 3, 4, 5]:
-            if (time.time() - last_cube_update_time) <= MAX_LOST_TIME:
-                dt = time.time() - last_cube_update_time
-                cur_pos_pred = [(last_cube_pos[0] + cube_speed[0] * dt), (last_cube_pos[1] + cube_speed[1] * dt), (last_cube_pos[2] + cube_speed[2] * dt)]
-                tvec_fin[0][0] = aruco_cube_pose.pose.position.x = cur_pos_pred[0]
-                tvec_fin[1][0] = aruco_cube_pose.pose.position.y = cur_pos_pred[1]
-                tvec_fin[2][0] = aruco_cube_pose.pose.position.z = cur_pos_pred[2]
-                # print("--> Lost, extrapolated position: {}".format(cur_pos_pred))
-            else:
-                aruco_cube_pose.pose.position.x = ERROR_CODE # ERROR_CODE to indicate error
-                aruco_cube_pose.pose.position.y = ERROR_CODE # ERROR_CODE to indicate error
-                aruco_cube_pose.pose.position.z = ERROR_CODE # ERROR_CODE to indicate error
-        
-        # TODO: maybe multi-processing at here is a required optimization (depends on the actual performance)
-        # -- do aruco cube processing --
-        if len(corners) >= 0 and source_id in [0, 1, 2, 3, 4, 5]:
-            # print("--> Source id: {}, Target id: {}".format(source_id, target_id))
-            # -- estimate the pose of each aruco marker --
-            R, R_new, rvec, tvec, rvec_fin = None, None, None, None, None
-            for i in range(len(corners)):
-                if ids[i][0] == source_id:
-                    source_index = i
-            ok, rvec, tvec = cv2.solvePnP(aruco_cube_aruco_obj_pnts, corners[source_index],cam_mat, dist, rvec, tvec)
-            
-            # -- setup a relative rotation and translation between the observed face and the original face --
-            R_to_source_surface, translation = get_surface_transform(source_id, target_id)
-            
-            # -- conversion to other plane --
-            R, _ = cv2.Rodrigues(rvec) # get rotation matrix
-            R_new = np.matmul(R, R_to_source_surface.T) # apply relative rotation
-            rvec_fin, _ = cv2.Rodrigues(R_new, rvec_fin) # get back Rodrigues (since OpenCV prefers working with it)
-            tvec_rel = np.matmul(R, np.array(translation * ARUCO_CUBE_OUTER_SIZE, tvec.dtype)) # apply relative translation
-            to_cube_center_translation = np.matmul(R_new, np.array([0, 0, ARUCO_CUBE_OUTER_SIZE*0.5], tvec.dtype))[...,None]
-            tvec_fin = tvec + tvec_rel + to_cube_center_translation
-            
-            if VISUALIZATION:
-                tvec_for_vis = np.array([[-10.5], [-2.4], [25]], tvec.dtype)
-                rvec_for_vis = rvec_fin.copy()
-            
-            # -- get pose (w, i, j, k, x, y, z) --
-            w, i, j, k = get_quaternion_from_rotation_matrix(R_new)
-            x = tvec_fin[0][0]
-            y = tvec_fin[1][0]
-            z = tvec_fin[2][0]
-            # print("Command is x:{}, y:{}, z:{}, w:{}, i:{}, j:{}, k:{}, quaternion norm:{:.3f}".format(x, y, z, w, i, j, k, np.linalg.norm(np.array([w,i,j,k]))))
-            
-            # -- update aruco cube pose --
-            aruco_cube_pose.pose.position.x = x
-            aruco_cube_pose.pose.position.y = y
-            aruco_cube_pose.pose.position.z = z
-            aruco_cube_pose.pose.orientation.w = w
-            aruco_cube_pose.pose.orientation.x = i
-            aruco_cube_pose.pose.orientation.y = j
-            aruco_cube_pose.pose.orientation.z = k
-
-            dt = time.time() - last_cube_update_time
-            aruco_cube_speeds.append([(x - last_cube_pos[0]) / dt, (y - last_cube_pos[1]) / dt, (z - last_cube_pos[2]) / dt])
-            last_cube_pos = [x, y, z]
-            last_cube_update_time = time.time()
-
-            if len(aruco_cube_speeds) > SPEEDS_LEN:
-                aruco_cube_speeds.pop(0)
-            np_aruco_speeds = np.array(aruco_cube_speeds)
-            cube_speed = [cal_speed(np_aruco_speeds[:,0]), cal_speed(np_aruco_speeds[:,1]), cal_speed(np_aruco_speeds[:,2])]
-
-        # -- do head aruco processing --
-        if head_aruco_index >= 0:
-            ok, head_aruco_rvec, head_aruco_tvec = cv2.solvePnP(head_aruco_obj_pnts, corners[head_aruco_index],cam_mat, dist, head_aruco_rvec, head_aruco_tvec)
-            
-            head_R, _ = cv2.Rodrigues(head_aruco_rvec)
-            head_w, head_i, head_j, head_k = get_quaternion_from_rotation_matrix(head_R)
-            head_x =head_aruco_tvec[0][0]
-            head_y =head_aruco_tvec[1][0]
-            head_z =head_aruco_tvec[2][0]
-            
-            # -- update head pose --
-            head_pose.pose.position.x = head_x
-            head_pose.pose.position.y = head_y
-            head_pose.pose.position.z = head_z
-            head_pose.pose.orientation.w = head_w
-            head_pose.pose.orientation.x = head_i
-            head_pose.pose.orientation.y = head_j
-            head_pose.pose.orientation.z = head_k
-            
-            head_aruco_vis_tvec = np.array([[-10.5], [4.5], [25]], head_aruco_tvec.dtype)
-
-            dt = time.time() - last_head_update_time
-            head_aruco_speeds.append([(head_x - last_head_pos[0]) / dt, (head_y - last_head_pos[1]) / dt, (head_z - last_head_pos[2]) / dt])
-            last_head_pos = [head_x, head_y, head_z]
-            last_head_update_time = time.time()
-
-            if len(head_aruco_speeds) > SPEEDS_LEN:
-                head_aruco_speeds.pop(0)
-            np_aruco_speeds = np.array(head_aruco_speeds)
-            head_speed = [cal_speed(np_aruco_speeds[:,0]), cal_speed(np_aruco_speeds[:,1]), cal_speed(np_aruco_speeds[:,2])]
-            
-        # -- visualization --
-        if VISUALIZATION:
-            # -- draw aruco marker visualization --
-            cv2.aruco.drawDetectedMarkers(canvas, corners, ids)
-            if rvec_for_vis is not None and tvec_fin is not None and rvec_for_vis is not None and tvec_for_vis is not None:
-                cv2.drawFrameAxes(canvas, cam_mat, dist, rvec_for_vis, tvec_fin, 1.5) # visualization of the inferred coordinates
-                cv2.drawFrameAxes(canvas, cam_mat, dist, rvec_for_vis, tvec_for_vis, 3.5) # visualization of the orientation of the cube only, at the bottom-left
-            if head_aruco_rvec is not None and head_aruco_vis_tvec is not None:
-                cv2.drawFrameAxes(canvas, cam_mat, dist, head_aruco_rvec, head_aruco_vis_tvec, 2.5) # visualization of the orientation of the head only, at the top-left
-            cv2.imshow("markers", canvas)
-            k = cv2.waitKey(1)
-            if k == ord('q'):
-                break
-            elif k == ord('c'):
-                target_id = (target_id + 1) % 6
-            elif k == ord('p'):
-                target_id = source_id
-            elif k == ord('b'):
-                save_f = "/home/pi/Desktop/save_"+str(cnt)+".png"
-                cv2.imwrite(save_f, canvas)
-                cnt+=1
+                    cnt+=1
                 
     # -- exited from while --
     if dynamic_param_config:

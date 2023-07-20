@@ -3,17 +3,21 @@ import numpy as np
 import time
 import os
 
-cap = cv2.VideoCapture(2)
+cap = cv2.VideoCapture(0)
 
 video_frame = np.ones((500, 700), dtype=np.uint8)
 last_taken_time = time.time()
-save_path = "../calibration_images/2"
+save_path = "../calibration_images/3"
 os.makedirs(save_path, exist_ok=True)
 cnt = 0
 started = False
+printed = False
 while 1:
     ret, frame = cap.read()
-    
+    if not printed:
+        print("--> Frame size: ", frame.shape)
+        printed = True
+        
     if not ret:
         cv2.imshow("video", video_frame)
         k = cv2.waitKey(1)
