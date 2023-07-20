@@ -10,6 +10,7 @@ import subprocess
 from dynamic_reconfigure.server import Server
 from aruco_cube_detector.cfg import ArucoCubeDetectorConfig
 import yaml
+import math
 
 # -- operational configurations --
 VISUALIZATION = True # if false, no ros msgs nor visualization window will be provided
@@ -347,20 +348,21 @@ def image_preproc(original_frame, mode=0):
     
     return ret
 
-def get_euler_zyx_from_quaternion(w, i, j, k):
-    sinr_cosp = 2 * (w * i + j * k)
-    cosr_cosp = 1 - 2 * (i * i + j * j)
-    roll = np.arctan2(sinr_cosp, cosr_cosp)
-
-    sinp = np.sqrt(1 + 2 * (w * j - i * k))
-    cosp = np.sqrt(1 - 2 * (w * j - i * k))
-    pitch = 2 * np.arctan2(sinp, cosp) - np.pi / 2
-
-    siny_cosp = 2 * (w * k + i * j)
-    cosy_cosp = 1 - 2 * (j * j + k * k)
-    yaw = np.arctan2(siny_cosp, cosy_cosp)
-    
-    return yaw, pitch, roll
+def get_euler_zyx_from_R(R):
+    sy = math.sqrt(R[0,0] * R[0,0] +  R[1,0] * R[1,0])
+ 
+    singular = sy < 1e-6
+ 
+    if  not singular :
+        x = math.atan2(R[2,1] , R[2,2])
+        y = math.atan2(-R[2,0], sy)
+        z = math.atan2(R[1,0], R[0,0])
+    else :
+        x = math.atan2(-R[1,2], R[1,1])
+        y = math.atan2(-R[2,0], sy)
+        z = 0
+ 
+    return np.array([x, y, z])
 
 # CAMERA_SERIAL_ID = "usb-xhci-hcd.0.auto-1.4"
 CAMERA_SERIAL_ID = "usb-0000:00:14.0-3"
@@ -392,17 +394,22 @@ def find_serial_device():
 def cal_speed(aruco_speeds_one_axis):
     return aruco_speeds_one_axis[0] * 0.05 + aruco_speeds_one_axis[1] * 0.05 + aruco_speeds_one_axis[2] * 0.1 + aruco_speeds_one_axis[3] * 0.15 + aruco_speeds_one_axis[4] * (0.65 + 0.175114514) # account for acceleration, since we assume the tracking lost is mostly due to acceleration which leads to motion blur
 
-is_calibration = True
 def main():
     global GAUSSIAN_BLUR_WINDOW_SIZE
     global CLAHE_WINDOW_SIZE
     global WHITE_THRESHOLD
     global PREPROC_MODE
     
+    is_calibration = False
+    calibration_execution_counter = 0
+    consecutive_can_save = 0
+    calibration_pattern_positions = [] # used to calculate position variance to determine if the camera and/or the pattern is stationary
+    
     # -- initialize ROS stuff --
     rospy.init_node("~aruco_cube_detector_node")
     print("--> Node initialized")
     aruco_pose_pub = rospy.Publisher("/aruco_cube_pose", PoseStamped)
+    transformed_aruco_pose_pub = rospy.Publisher("/aruco_cube_pose_transformed", PoseStamped)
     head_pose_pub = rospy.Publisher("/head_pose", PoseStamped)
     
     # -- open serial port --
@@ -445,6 +452,7 @@ def main():
     print("--> Configuration file: {}".format(config_file_path))
     
     cv_param_file = rospy.get_param("~cv_param_file", default="")
+    cam_pos_calibration_file = rospy.get_param("~cam_pos_calibration_file", default="")
     
     dynamic_param_config = rospy.get_param("~dynamic_param_config", default=False)
     if dynamic_param_config:
@@ -457,6 +465,20 @@ def main():
     WHITE_THRESHOLD = rospy.get_param("~white_threshold", WHITE_THRESHOLD)
     PREPROC_MODE = rospy.get_param("~preproc_mode", PREPROC_MODE)
     print("--> Preproc mode {:03b}".format(int(PREPROC_MODE, 2)))
+    
+    # -- camera extrinsics --
+    r00 = rospy.get_param("~r00", default=1)
+    r01 = rospy.get_param("~r01", default=0)
+    r02 = rospy.get_param("~r02", default=0)
+    r10 = rospy.get_param("~r10", default=0)
+    r11 = rospy.get_param("~r11", default=1)
+    r12 = rospy.get_param("~r12", default=0)
+    r20 = rospy.get_param("~r20", default=0)
+    r21 = rospy.get_param("~r21", default=0)
+    r22 = rospy.get_param("~r22", default=1)
+    camera_extrinsic_R = np.array(([r00, r01, r02], [r10, r11, r12], [r20, r21, r22]))
+    camera_extrinsic_R = camera_extrinsic_R.T
+    print("--> Camera extrinsics\n", camera_extrinsic_R)
     
     # -- read camera parameters --
     fs = cv2.FileStorage(config_file_path, cv2.FILE_STORAGE_READ)
@@ -519,6 +541,10 @@ def main():
     SPEEDS_LEN = 5 # num elements
     MAX_LOST_TIME = 1.5 # seconds
     ERROR_CODE = -1000
+    STABLE_VARIANCE_THRESHOLD = 0.8
+    CONSECUTIVE_CAN_SAVE_THRESHOLD = 75
+    MAX_CALIBRATION_PATTERN_POS_ARRAY_LEN = 125
+    REQUIRED_MAX_DISTANCE_TO_CALIBRATION_PATTERN = 251
     
     # -- static variables --
     # object points for solvePnP 
@@ -603,20 +629,48 @@ def main():
                     if ids[i][0] == 0:
                         calibration_pattern_index = i
                         break
-                
+                calibration_execution_counter += 1
                 # -- solve for position and orientation --
                 rvec, tvec = 0, 0
                 ok, rvec, tvec = cv2.solvePnP(calibration_aruco_obj_pnts, corners[calibration_pattern_index], cam_mat, dist, rvec, tvec)
-                ok, R = cv2.Rodrigues(rvec)
+                R, ok = cv2.Rodrigues(rvec)
                 w, i, j, k = get_quaternion_from_rotation_matrix(R)
+                calibration_pattern_positions.append([tvec[0][0], tvec[1][0], tvec[2][0]])
+                
+                if len(calibration_pattern_positions) > MAX_CALIBRATION_PATTERN_POS_ARRAY_LEN:
+                    calibration_pattern_positions.pop(0)
+                
+                variance = np.var(np.array(calibration_pattern_positions), axis=0)
+                # print("--> Variance: ", variance)
+
+                can_save = calibration_execution_counter > 1000 and variance[0] < STABLE_VARIANCE_THRESHOLD and variance[1] < STABLE_VARIANCE_THRESHOLD and variance[2] < STABLE_VARIANCE_THRESHOLD and tvec[2][0] <= REQUIRED_MAX_DISTANCE_TO_CALIBRATION_PATTERN
+                
+                # print("--> Can save? ", can_save)
+                
+                if can_save:
+                    consecutive_can_save += 1
+                else:
+                    consecutive_can_save = 0
+                    
+                if consecutive_can_save > CONSECUTIVE_CAN_SAVE_THRESHOLD:
+                    # save parameters here
+                    print("--> Saved parameters!!!")
+                    is_calibration = False
+                    dict_file = {"r00": float(R[0,0]), "r01": float(R[0,1]), "r02": float(R[0,2]), \
+                        "r10": float(R[1,0]), "r11": float(R[1,1]), "r12": float(R[1,2]), \
+                            "r20": float(R[2,0]), "r21": float(R[2,1]), "r22": float(R[2,2])}
+                    with open(cam_pos_calibration_file, "w") as file:
+                        doc = yaml.dump(dict_file, file)
                 
                 # -- draw detected pattern --
                 if VISUALIZATION:
                     cv2.aruco.drawDetectedMarkers(canvas, corners, ids[calibration_pattern_index])
                     cv2.drawFrameAxes(canvas, cam_mat, dist, rvec, tvec, 15, 2)
-                    yaw, pitch, roll = get_euler_zyx_from_quaternion(w, i, j, k)
-                    print("--> Roll {:3f}, pitch {:3f}, yaw {:3f}".format(roll, pitch, yaw))
-                    print("--> Position x {}, y {}, z {}".format(tvec[0][0], tvec[1][0], tvec[2][0]))
+                    eulers = get_euler_zyx_from_R(R)
+                    # print("--> Roll {:3f}, pitch {:3f}, yaw {:3f}".format(eulers[0], eulers[1], eulers[2]))
+                    # print("--> Position x {}, y {}, z {}".format(tvec[0][0], tvec[1][0], tvec[2][0]))
+            else:
+                consecutive_can_save = 0
             
             if VISUALIZATION:
                 cv2.imshow("canvas", canvas)
@@ -722,6 +776,10 @@ def main():
                 to_cube_center_translation = np.matmul(R_new, np.array([0, 0, ARUCO_CUBE_OUTER_SIZE*0.5], tvec.dtype))[...,None]
                 tvec_fin = tvec + tvec_rel + to_cube_center_translation
                 
+                tvec_transformed = np.matmul(camera_extrinsic_R, tvec_fin)
+                print("--> Tvec before\n", tvec_fin)
+                print("--> Tvec after\n", tvec_transformed)
+                
                 if VISUALIZATION:
                     tvec_for_vis = np.array([[-10.5], [-2.4], [25]], tvec.dtype)
                     rvec_for_vis = rvec_fin.copy()
@@ -741,6 +799,15 @@ def main():
                 aruco_cube_pose.pose.orientation.x = i
                 aruco_cube_pose.pose.orientation.y = j
                 aruco_cube_pose.pose.orientation.z = k
+                
+                transformed_aruco_cube_pos = PoseStamped()
+                transformed_aruco_cube_pos.header = aruco_cube_pose.header
+                transformed_aruco_cube_pos.pose.position.x = tvec_transformed[0][0]
+                transformed_aruco_cube_pos.pose.position.y = tvec_transformed[1][0]
+                transformed_aruco_cube_pos.pose.position.z = tvec_transformed[2][0]
+                print("--> Tvec before\n", aruco_cube_pose.pose.position.y)
+                print("--> Tvec after\n", transformed_aruco_cube_pos.pose.position.y)
+                transformed_aruco_pose_pub.publish(transformed_aruco_cube_pos)
 
                 dt = time.time() - last_cube_update_time
                 aruco_cube_speeds.append([(x - last_cube_pos[0]) / dt, (y - last_cube_pos[1]) / dt, (z - last_cube_pos[2]) / dt])
