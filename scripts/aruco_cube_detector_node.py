@@ -12,8 +12,8 @@ from aruco_cube_detector.cfg import ArucoCubeDetectorConfig
 import yaml
 
 # -- operational configurations --
-VISUALIZATION = True
-USE_SERIAL = False
+VISUALIZATION = False # if false, no ros msgs nor visualization window will be provided
+USE_SERIAL = True
 
 # struct Pose
 # {
@@ -346,8 +346,8 @@ def image_preproc(original_frame, mode=0):
     
     return ret
 
-# CAMERA_SERIAL_ID = "usb-xhci-hcd.0.auto-1.4"
-CAMERA_SERIAL_ID = "usb-0000:00:14.0-3"
+CAMERA_SERIAL_ID = "usb-xhci-hcd.0.auto-1.4"
+# CAMERA_SERIAL_ID = "usb-0000:00:14.0-3"
 def find_camera_index():
     cam_idx = -1
     result = subprocess.run(['v4l2-ctl', '--list-devices'], stdout=subprocess.PIPE) # get camera index by hardware identifier
@@ -372,7 +372,10 @@ def find_serial_device():
         device_name = cmd_out[start_idx:start_idx+len("ttyACMX")]
 
     return device_name
-        
+
+def cal_speed(aruco_speeds_one_axis):
+    return aruco_speeds_one_axis[0] * 0.05 + aruco_speeds_one_axis[1] * 0.05 + aruco_speeds_one_axis[2] * 0.1 + aruco_speeds_one_axis[3] * 0.15 + aruco_speeds_one_axis[4] * (0.65 + 0.175114514) # account for acceleration, since we assume the tracking lost is mostly due to acceleration which leads to motion blur
+
 def main():
     global GAUSSIAN_BLUR_WINDOW_SIZE
     global CLAHE_WINDOW_SIZE
@@ -492,6 +495,9 @@ def main():
     HALF_HEAD_ARUCO_SIZE = HEAD_ARUCO_SIZE / 2.0
     CAMERA_RECONNECTION_PERIOD = 2.75 # seconds
     SERIAL_DEVICE_RECONNECTION_PERIOD = 1.5 # seconds
+    SPEEDS_LEN = 5 # num elements
+    MAX_LOST_TIME = 1.5 # seconds
+    ERROR_CODE = -1000
     
     # -- static variables --
     # object points for solvePnP 
@@ -501,7 +507,7 @@ def main():
     target_id = 0
     debug_source_id = 5
     canvas = np.zeros((200, 200), np.uint8) # to hold visualization markers
-    head_aruco_rvec, head_aruco_tvec, rvec_for_vis, tvec_fin, rvec_for_vis, tvec_for_vis, head_aruco_vis_tvec = None, None, None, None, None, None, None
+    head_aruco_rvec, head_aruco_tvec, rvec_for_vis, tvec_fin, rvec_for_vis, tvec_for_vis, head_aruco_vis_tvec = None, None, None, [[None], [None], [None]], None, None, None
     camera_disconnection_counter = 0
     last_camera_reconnection_attempt_time = time.time()
     serial_device_disconnection_counter = 0
@@ -509,7 +515,16 @@ def main():
     
     R = None
     m1, m2 = cv2.initUndistortRectifyMap(cam_mat, dist, R, new_cam_mat, (test.shape[1], test.shape[0]), 5)
-    
+    cnt = 0
+    head_aruco_speeds = [[0, 0, 0]] * SPEEDS_LEN
+    head_speed = [0, 0, 0]
+    last_head_pos = [0, 0, 0]
+    last_head_update_time = time.time()
+    aruco_cube_speeds = [[0, 0, 0]] * SPEEDS_LEN
+    cube_speed = [0, 0, 0]
+    last_cube_pos = [0, 0, 0]
+    last_cube_update_time = time.time()
+
     rate = rospy.Rate(1000)
     while not rospy.is_shutdown():
         rate.sleep()
@@ -573,10 +588,10 @@ def main():
             
             if VISUALIZATION:
                 cv2.imshow("markers", canvas)
-                cv2.imshow("raw", np.zeros_like(canvas))
                 k = cv2.waitKey(1)
                 if k == ord('q'):
                     break
+                
             continue
         
         if camera_disconnection_counter > 0:
@@ -600,6 +615,40 @@ def main():
                 head_aruco_index = i
             else:
                 source_id = ids[i][0] # use the first found aruco as the source
+
+        # head aruco not detected
+        if head_aruco_index < 0:
+            if VISUALIZATION:
+                cnt += 1
+                if cnt < 40 and cnt >= 10:
+                    save_f = "/home/pi/Desktop/save_"+str(cnt)+".png"
+                    cv2.imwrite(save_f, canvas)
+            
+            if (time.time() - last_head_update_time) <= MAX_LOST_TIME:
+                dt = time.time() - last_head_update_time
+                cur_pos_pred = [(last_head_pos[0] + head_speed[0] * dt), (last_head_pos[1] + head_speed[1] * dt), (last_head_pos[2] + head_speed[2] * dt)]
+                head_pose.pose.position.x = cur_pos_pred[0]
+                head_pose.pose.position.y = cur_pos_pred[1]
+                head_pose.pose.position.z = cur_pos_pred[2]
+                # print("--> Lost, extrapolated position: {}".format(cur_pos_pred))
+            else:
+                head_pose.pose.position.x = ERROR_CODE # ERROR_CODE to indicate error
+                head_pose.pose.position.y = ERROR_CODE # ERROR_CODE to indicate error
+                head_pose.pose.position.z = ERROR_CODE # ERROR_CODE to indicate error
+
+        # aruco cube not detected
+        if source_id not in [0, 1, 2, 3, 4, 5]:
+            if (time.time() - last_cube_update_time) <= MAX_LOST_TIME:
+                dt = time.time() - last_cube_update_time
+                cur_pos_pred = [(last_cube_pos[0] + cube_speed[0] * dt), (last_cube_pos[1] + cube_speed[1] * dt), (last_cube_pos[2] + cube_speed[2] * dt)]
+                tvec_fin[0][0] = aruco_cube_pose.pose.position.x = cur_pos_pred[0]
+                tvec_fin[1][0] = aruco_cube_pose.pose.position.y = cur_pos_pred[1]
+                tvec_fin[2][0] = aruco_cube_pose.pose.position.z = cur_pos_pred[2]
+                # print("--> Lost, extrapolated position: {}".format(cur_pos_pred))
+            else:
+                aruco_cube_pose.pose.position.x = ERROR_CODE # ERROR_CODE to indicate error
+                aruco_cube_pose.pose.position.y = ERROR_CODE # ERROR_CODE to indicate error
+                aruco_cube_pose.pose.position.z = ERROR_CODE # ERROR_CODE to indicate error
         
         # TODO: maybe multi-processing at here is a required optimization (depends on the actual performance)
         # -- do aruco cube processing --
@@ -642,6 +691,17 @@ def main():
             aruco_cube_pose.pose.orientation.x = i
             aruco_cube_pose.pose.orientation.y = j
             aruco_cube_pose.pose.orientation.z = k
+
+            dt = time.time() - last_cube_update_time
+            aruco_cube_speeds.append([(x - last_cube_pos[0]) / dt, (y - last_cube_pos[1]) / dt, (z - last_cube_pos[2]) / dt])
+            last_cube_pos = [x, y, z]
+            last_cube_update_time = time.time()
+
+            if len(aruco_cube_speeds) > SPEEDS_LEN:
+                aruco_cube_speeds.pop(0)
+            np_aruco_speeds = np.array(aruco_cube_speeds)
+            cube_speed = [cal_speed(np_aruco_speeds[:,0]), cal_speed(np_aruco_speeds[:,1]), cal_speed(np_aruco_speeds[:,2])]
+
         # -- do head aruco processing --
         if head_aruco_index >= 0:
             ok, head_aruco_rvec, head_aruco_tvec = cv2.solvePnP(head_aruco_obj_pnts, corners[head_aruco_index],cam_mat, dist, head_aruco_rvec, head_aruco_tvec)
@@ -662,6 +722,16 @@ def main():
             head_pose.pose.orientation.z = head_k
             
             head_aruco_vis_tvec = np.array([[-10.5], [4.5], [25]], head_aruco_tvec.dtype)
+
+            dt = time.time() - last_head_update_time
+            head_aruco_speeds.append([(head_x - last_head_pos[0]) / dt, (head_y - last_head_pos[1]) / dt, (head_z - last_head_pos[2]) / dt])
+            last_head_pos = [head_x, head_y, head_z]
+            last_head_update_time = time.time()
+
+            if len(head_aruco_speeds) > SPEEDS_LEN:
+                head_aruco_speeds.pop(0)
+            np_aruco_speeds = np.array(head_aruco_speeds)
+            head_speed = [cal_speed(np_aruco_speeds[:,0]), cal_speed(np_aruco_speeds[:,1]), cal_speed(np_aruco_speeds[:,2])]
             
         # -- visualization --
         if VISUALIZATION:
@@ -673,7 +743,6 @@ def main():
             if head_aruco_rvec is not None and head_aruco_vis_tvec is not None:
                 cv2.drawFrameAxes(canvas, cam_mat, dist, head_aruco_rvec, head_aruco_vis_tvec, 2.5) # visualization of the orientation of the head only, at the top-left
             cv2.imshow("markers", canvas)
-            cv2.imshow("raw", frame)
             k = cv2.waitKey(1)
             if k == ord('q'):
                 break
@@ -681,6 +750,10 @@ def main():
                 target_id = (target_id + 1) % 6
             elif k == ord('p'):
                 target_id = source_id
+            elif k == ord('b'):
+                save_f = "/home/pi/Desktop/save_"+str(cnt)+".png"
+                cv2.imwrite(save_f, canvas)
+                cnt+=1
                 
     # -- exited from while --
     if dynamic_param_config:
