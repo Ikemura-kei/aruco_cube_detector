@@ -1,4 +1,4 @@
-clahe_window_size: 7
-gaussian_blur_window_size: 5
+clahe_window_size: 4
+gaussian_blur_window_size: 7
 preproc_mode: '111'
-white_threshold: 109
+white_threshold: 149

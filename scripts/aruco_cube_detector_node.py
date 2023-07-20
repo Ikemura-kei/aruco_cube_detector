@@ -12,8 +12,8 @@ from aruco_cube_detector.cfg import ArucoCubeDetectorConfig
 import yaml
 
 # -- operational configurations --
-VISUALIZATION = False # if false, no ros msgs nor visualization window will be provided
-USE_SERIAL = True
+VISUALIZATION = True # if false, no ros msgs nor visualization window will be provided
+USE_SERIAL = False
 
 # struct Pose
 # {
@@ -331,6 +331,7 @@ def image_preproc(original_frame, mode=0):
     if (mode & USE_WHITE_THRESHOLD) == USE_WHITE_THRESHOLD:
         mask = np.where(((ret[...,0]>WHITE_THRESHOLD) * (ret[...,1]>WHITE_THRESHOLD) * (ret[...,2]>WHITE_THRESHOLD)), 255, 0).astype(np.uint8)
         ret[np.tile(mask[...,None], (1,1,3))>0] = 255
+        ret[np.tile(mask[...,None], (1,1,3))<=0] = 0
     if (mode & USE_LAB_PROC) == USE_LAB_PROC:
         lab= cv2.cvtColor(ret, cv2.COLOR_BGR2LAB)
         l_channel, a, b = cv2.split(lab)
@@ -346,8 +347,8 @@ def image_preproc(original_frame, mode=0):
     
     return ret
 
-CAMERA_SERIAL_ID = "usb-xhci-hcd.0.auto-1.4"
-# CAMERA_SERIAL_ID = "usb-0000:00:14.0-3"
+# CAMERA_SERIAL_ID = "usb-xhci-hcd.0.auto-1.4"
+CAMERA_SERIAL_ID = "usb-0000:00:14.0-3"
 def find_camera_index():
     cam_idx = -1
     result = subprocess.run(['v4l2-ctl', '--list-devices'], stdout=subprocess.PIPE) # get camera index by hardware identifier
@@ -568,7 +569,8 @@ def main():
         
         # -- read frame in --
         ret, frame = cap.read()
-        
+        # print(frame.shape)
+        # exit()
         if not ret:
             if VISUALIZATION:
                 if rvec_for_vis is not None and tvec_fin is not None and rvec_for_vis is not None and tvec_for_vis is not None:
